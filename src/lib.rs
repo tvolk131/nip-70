@@ -289,9 +289,10 @@ mod tests {
                         content,
                     };
 
-                    let event = client.sign_event(unsigned_event).await.unwrap();
+                    let event = client.sign_event(unsigned_event.clone()).await.unwrap();
 
                     assert!(event.verify().is_ok());
+                    assert_eq!(event.id, unsigned_event.id);
 
                     // Give other client tasks a chance to send requests.
                     tokio::time::sleep(Duration::from_millis(50)).await;
