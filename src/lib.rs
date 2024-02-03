@@ -9,10 +9,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip70.sock";
-// TODO: Increase this buffer size once we've added unit tests
-// that ensure large messages are handled correctly. This should
-// significantly increase performance.
-const BUFFER_SIZE: usize = 8;
+const BUFFER_SIZE: usize = 1024;
 
 // Defines the server-side functionality for the NIP-70 protocol.
 #[async_trait]
@@ -65,9 +62,9 @@ impl Nip70Server {
                         let mut rolling_buf: Vec<u8> = Vec::new();
                         let request: Nip70Request;
 
-                        socket.readable().await?;
                         // TODO: Add a timeout to this read operation.
                         loop {
+                            socket.readable().await?;
                             if let Ok(nbytes) = socket.try_read(&mut buf) {
                                 for byte in &buf[..nbytes] {
                                     rolling_buf.push(*byte);
@@ -133,8 +130,14 @@ impl Nip70Client {
         let mut socket = UnixStream::connect(NIP70_UDS_ADDRESS).await?;
 
         // Send the request.
-        socket.writable().await?;
-        socket.try_write(&serde_json::to_vec(request)?)?;
+        let serialized_request = &serde_json::to_vec(request)?;
+        let mut bytes_written = 0;
+        while bytes_written < serialized_request.len() {
+            socket.writable().await?;
+            bytes_written += socket
+                .try_write(&serialized_request[bytes_written..])
+                .unwrap_or(0);
+        }
         socket.flush().await?;
 
         // Read the response from the server.
@@ -252,6 +255,31 @@ mod tests {
         let kind = Kind::TextNote;
         let tags = vec![];
         let content = String::from("Hello, world!");
+        let unsigned_event = UnsignedEvent {
+            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            pubkey,
+            created_at,
+            kind,
+            tags,
+            content,
+        };
+
+        let event = client.sign_event(unsigned_event).await.unwrap();
+
+        assert!(event.verify().is_ok());
+    }
+
+    #[tokio::test]
+    async fn sign_large_event_over_uds() {
+        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
+        let server = Nip70Server::new(nip70.clone()).unwrap();
+        let client = Nip70Client::default();
+
+        let pubkey = client.get_public_key().await.unwrap();
+        let created_at = Timestamp::now();
+        let kind = Kind::TextNote;
+        let tags = vec![];
+        let content: String = std::iter::repeat('a').take(BUFFER_SIZE * 1000).collect();
         let unsigned_event = UnsignedEvent {
             id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
             pubkey,
