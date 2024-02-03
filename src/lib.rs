@@ -38,16 +38,21 @@ pub trait Nip70: Send + Sync {
 // Accepts a `Nip70` implementation and binds to a Unix domain socket.
 pub struct Nip70Server {
     uds_task_handle: tokio::task::JoinHandle<()>,
+    uds_address: String,
 }
 
 impl Nip70Server {
     /// Creates a new `Nip70Server` instance and binds to a Unix domain socket.
     pub fn new(nip70: Arc<dyn Nip70>) -> anyhow::Result<Self> {
-        if Path::new(NIP70_UDS_ADDRESS).exists() {
-            std::fs::remove_file(NIP70_UDS_ADDRESS)?;
+        Self::new_internal(nip70, NIP70_UDS_ADDRESS.to_string())
+    }
+
+    fn new_internal(nip70: Arc<dyn Nip70>, uds_address: String) -> anyhow::Result<Self> {
+        if Path::new(&uds_address).exists() {
+            std::fs::remove_file(&uds_address)?;
         }
 
-        let listener = UnixListener::bind(NIP70_UDS_ADDRESS)?;
+        let listener = UnixListener::bind(&uds_address)?;
 
         let uds_task_handle = tokio::spawn(async move {
             loop {
@@ -92,7 +97,10 @@ impl Nip70Server {
             }
         });
 
-        Ok(Nip70Server { uds_task_handle })
+        Ok(Nip70Server {
+            uds_task_handle,
+            uds_address,
+        })
     }
 
     async fn handle_incoming_request(
@@ -114,13 +122,13 @@ impl std::ops::Drop for Nip70Server {
         self.uds_task_handle.abort();
 
         // Try to remove the UDS file. If it fails, it's not a big deal.
-        let _ = std::fs::remove_file(NIP70_UDS_ADDRESS);
+        let _ = std::fs::remove_file(&self.uds_address);
     }
 }
 
-async fn make_rpc(request: &Nip70Request) -> anyhow::Result<Nip70Response> {
+async fn make_rpc(request: &Nip70Request, uds_address: &str) -> anyhow::Result<Nip70Response> {
     // Open up a UDS connection to the server.
-    let mut socket = UnixStream::connect(NIP70_UDS_ADDRESS).await?;
+    let mut socket = UnixStream::connect(uds_address).await?;
 
     // Send the request.
     let serialized_request = &serde_json::to_vec(request)?;
@@ -142,7 +150,11 @@ async fn make_rpc(request: &Nip70Request) -> anyhow::Result<Nip70Response> {
 }
 
 pub async fn get_public_key() -> anyhow::Result<XOnlyPublicKey> {
-    let response = make_rpc(&Nip70Request::GetPublicKey).await?;
+    get_public_key_internal(NIP70_UDS_ADDRESS).await
+}
+
+async fn get_public_key_internal(uds_address: &str) -> anyhow::Result<XOnlyPublicKey> {
+    let response = make_rpc(&Nip70Request::GetPublicKey, uds_address).await?;
     if let Nip70Response::PublicKey(public_key) = response {
         Ok(public_key)
     } else {
@@ -151,7 +163,11 @@ pub async fn get_public_key() -> anyhow::Result<XOnlyPublicKey> {
 }
 
 pub async fn sign_event(event: UnsignedEvent) -> anyhow::Result<Event> {
-    let response = make_rpc(&Nip70Request::SignEvent(event)).await?;
+    sign_event_internal(event, NIP70_UDS_ADDRESS).await
+}
+
+async fn sign_event_internal(event: UnsignedEvent, uds_address: &str) -> anyhow::Result<Event> {
+    let response = make_rpc(&Nip70Request::SignEvent(event), uds_address).await?;
     if let Nip70Response::Event(event) = response {
         Ok(event)
     } else {
@@ -160,7 +176,13 @@ pub async fn sign_event(event: UnsignedEvent) -> anyhow::Result<Event> {
 }
 
 pub async fn get_relays() -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
-    let response = make_rpc(&Nip70Request::GetRelays).await?;
+    get_relays_internal(NIP70_UDS_ADDRESS).await
+}
+
+async fn get_relays_internal(
+    uds_address: &str,
+) -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
+    let response = make_rpc(&Nip70Request::GetRelays, uds_address).await?;
     if let Nip70Response::Relays(relays) = response {
         Ok(relays)
     } else {
@@ -192,7 +214,7 @@ pub struct RelayPolicy {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Mutex, time::Duration};
 
     use super::*;
 
@@ -203,11 +225,22 @@ mod tests {
     }
 
     impl TestNip70Implementation {
-        pub fn new_with_generated_keys() -> Self {
+        fn new_with_generated_keys() -> Self {
             Self {
                 keys: Keys::generate(),
             }
         }
+    }
+
+    lazy_static::lazy_static! {
+        static ref UDS_ADDRESS_COUNTER: Arc<Mutex<i32>> = Arc::new(Mutex::new(0));
+    }
+
+    fn get_free_uds_address() -> String {
+        let mut counter = UDS_ADDRESS_COUNTER.lock().unwrap();
+        let uds_address = format!("/tmp/nip70-{}.sock", *counter);
+        *counter += 1;
+        uds_address
     }
 
     #[async_trait]
@@ -223,21 +256,23 @@ mod tests {
 
     #[tokio::test]
     async fn get_public_key_over_uds() {
+        let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new(nip70.clone()).unwrap();
+        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
 
         assert_eq!(
             nip70.get_public_key().await.unwrap(),
-            get_public_key().await.unwrap()
+            get_public_key_internal(&uds_address).await.unwrap()
         );
     }
 
     #[tokio::test]
     async fn sign_event_over_uds() {
+        let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new(nip70.clone()).unwrap();
+        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
 
-        let pubkey = get_public_key().await.unwrap();
+        let pubkey = get_public_key_internal(&uds_address).await.unwrap();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -251,17 +286,20 @@ mod tests {
             content,
         };
 
-        let event = sign_event(unsigned_event).await.unwrap();
+        let event = sign_event_internal(unsigned_event, &uds_address)
+            .await
+            .unwrap();
 
         assert!(event.verify().is_ok());
     }
 
     #[tokio::test]
     async fn sign_large_event_over_uds() {
+        let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new(nip70.clone()).unwrap();
+        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
 
-        let pubkey = get_public_key().await.unwrap();
+        let pubkey = get_public_key_internal(&uds_address).await.unwrap();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -275,21 +313,25 @@ mod tests {
             content,
         };
 
-        let event = sign_event(unsigned_event).await.unwrap();
+        let event = sign_event_internal(unsigned_event, &uds_address)
+            .await
+            .unwrap();
 
         assert!(event.verify().is_ok());
     }
 
     #[tokio::test]
     async fn sign_event_over_uds_load() {
+        let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new(nip70.clone()).unwrap();
+        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
 
         let mut client_handles = Vec::new();
         for i in 0..128 {
+            let uds_address = uds_address.clone();
             let handle = tokio::spawn(async move {
                 for j in 0..20 {
-                    let pubkey = get_public_key().await.unwrap();
+                    let pubkey = get_public_key_internal(&uds_address).await.unwrap();
                     let created_at = Timestamp::now();
                     let kind = Kind::TextNote;
                     let tags = vec![];
@@ -303,7 +345,9 @@ mod tests {
                         content,
                     };
 
-                    let event = sign_event(unsigned_event.clone()).await.unwrap();
+                    let event = sign_event_internal(unsigned_event.clone(), &uds_address)
+                        .await
+                        .unwrap();
 
                     assert!(event.verify().is_ok());
                     assert_eq!(event.id, unsigned_event.id);
