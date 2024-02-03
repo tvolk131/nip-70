@@ -1,7 +1,11 @@
 [package]
-name = "nip_70"
+name = "nip-70"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Reference implementation of Nostr NIP-70"
+documentation = "https://docs.rs/nip-70"
+repository = "https://github.com/tvolk131/nip-70"
 
 [dependencies]
 anyhow = "1.0.79"
