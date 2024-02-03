@@ -126,67 +126,115 @@ impl std::ops::Drop for Nip70Server {
     }
 }
 
-async fn make_rpc(request: &Nip70Request, uds_address: &str) -> anyhow::Result<Nip70Response> {
+// TODO: Test error handling more thoroughly.
+#[derive(Debug, PartialEq)]
+pub enum Nip70Error {
+    /// The NIP-70 Unix domain socket server is not running.
+    ServerNotRunning,
+
+    /// An I/O error occurred while writing to or reading from the Unix domain socket.
+    UdsSocketError,
+
+    /// A NIP-70 protocol-level error occurred while encoding or decoding messages.
+    ProtocolError,
+}
+
+impl std::fmt::Display for Nip70Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Nip70Error::ServerNotRunning => {
+                write!(f, "NIP-70 Unix domain socket server not running.")
+            }
+            Nip70Error::UdsSocketError => {
+                write!(f, "Error writing to or reading from Unix domain socket.")
+            }
+            Nip70Error::ProtocolError => {
+                write!(
+                    f,
+                    "Error encoding or decoding messages according to the NIP-70 protocol."
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for Nip70Error {}
+
+async fn make_rpc(request: &Nip70Request, uds_address: &str) -> Result<Nip70Response, Nip70Error> {
     // Open up a UDS connection to the server.
-    let mut socket = UnixStream::connect(uds_address).await?;
+    let mut socket = UnixStream::connect(uds_address)
+        .await
+        .map_err(|_| Nip70Error::ServerNotRunning)?;
 
     // Send the request.
-    let serialized_request = &serde_json::to_vec(request)?;
+    let serialized_request = &serde_json::to_vec(request).map_err(|_| Nip70Error::ProtocolError)?;
     let mut bytes_written = 0;
     while bytes_written < serialized_request.len() {
-        socket.writable().await?;
+        socket
+            .writable()
+            .await
+            .map_err(|_| Nip70Error::UdsSocketError)?;
         bytes_written += socket
             .try_write(&serialized_request[bytes_written..])
             .unwrap_or(0);
     }
-    socket.flush().await?;
+    socket
+        .flush()
+        .await
+        .map_err(|_| Nip70Error::UdsSocketError)?;
 
     // Read the response from the server.
     // TODO: Add a timeout to this read operation.
-    socket.readable().await?;
+    socket
+        .readable()
+        .await
+        .map_err(|_| Nip70Error::UdsSocketError)?;
     let mut buf = Vec::new();
-    socket.read_to_end(&mut buf).await?;
-    Ok(serde_json::from_slice::<Nip70Response>(&buf)?)
+    socket
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|_| Nip70Error::UdsSocketError)?;
+    Ok(serde_json::from_slice::<Nip70Response>(&buf).map_err(|_| Nip70Error::ProtocolError)?)
 }
 
-pub async fn get_public_key() -> anyhow::Result<XOnlyPublicKey> {
+pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70Error> {
     get_public_key_internal(NIP70_UDS_ADDRESS).await
 }
 
-async fn get_public_key_internal(uds_address: &str) -> anyhow::Result<XOnlyPublicKey> {
+async fn get_public_key_internal(uds_address: &str) -> Result<XOnlyPublicKey, Nip70Error> {
     let response = make_rpc(&Nip70Request::GetPublicKey, uds_address).await?;
     if let Nip70Response::PublicKey(public_key) = response {
         Ok(public_key)
     } else {
-        anyhow::bail!("Unexpected response from server!")
+        Err(Nip70Error::ProtocolError)
     }
 }
 
-pub async fn sign_event(event: UnsignedEvent) -> anyhow::Result<Event> {
+pub async fn sign_event(event: UnsignedEvent) -> Result<Event, Nip70Error> {
     sign_event_internal(event, NIP70_UDS_ADDRESS).await
 }
 
-async fn sign_event_internal(event: UnsignedEvent, uds_address: &str) -> anyhow::Result<Event> {
+async fn sign_event_internal(event: UnsignedEvent, uds_address: &str) -> Result<Event, Nip70Error> {
     let response = make_rpc(&Nip70Request::SignEvent(event), uds_address).await?;
     if let Nip70Response::Event(event) = response {
         Ok(event)
     } else {
-        anyhow::bail!("Unexpected response from server!")
+        Err(Nip70Error::ProtocolError)
     }
 }
 
-pub async fn get_relays() -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
+pub async fn get_relays() -> Result<Option<HashMap<String, RelayPolicy>>, Nip70Error> {
     get_relays_internal(NIP70_UDS_ADDRESS).await
 }
 
 async fn get_relays_internal(
     uds_address: &str,
-) -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
+) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70Error> {
     let response = make_rpc(&Nip70Request::GetRelays, uds_address).await?;
     if let Nip70Response::Relays(relays) = response {
         Ok(relays)
     } else {
-        anyhow::bail!("Unexpected response from server!")
+        Err(Nip70Error::ProtocolError)
     }
 }
 
@@ -366,7 +414,8 @@ mod tests {
 
     #[tokio::test]
     async fn make_rpc_with_no_server() {
-        // TODO: Check more about this than just whether it's an error.
-        assert!(get_public_key().await.is_err());
+        let public_key_or = get_public_key().await;
+        assert!(public_key_or.is_err());
+        assert_eq!(public_key_or.unwrap_err(), Nip70Error::ServerNotRunning);
     }
 }
