@@ -107,6 +107,7 @@ impl Nip70Server {
     ) -> anyhow::Result<Nip70Response> {
         Ok(match request {
             Nip70Request::GetPublicKey => Nip70Response::PublicKey(nip70.get_public_key().await?),
+            // TODO: Let's get the pubkey and check it against the unsigned event before signing.
             Nip70Request::SignEvent(event) => Nip70Response::Event(nip70.sign_event(event).await?),
             Nip70Request::GetRelays => Nip70Response::Relays(nip70.get_relays().await?),
         })
