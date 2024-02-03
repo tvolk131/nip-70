@@ -334,4 +334,12 @@ mod tests {
             handle.await.unwrap();
         }
     }
+
+    #[tokio::test]
+    async fn make_rpc_with_no_server() {
+        let client = Nip70Client::default();
+
+        // TODO: Check more about this than just whether it's an error.
+        assert!(client.get_public_key().await.is_err());
+    }
 }
