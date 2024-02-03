@@ -42,9 +42,6 @@ pub struct Nip70Server {
 
 impl Nip70Server {
     /// Creates a new `Nip70Server` instance and binds to a Unix domain socket.
-    /// DO NOT pass in a `Nip70Client` instance here, as it will cause the server
-    /// to handle all incoming requests by making a new request to itself, which
-    /// will result in infinite looping.
     pub fn new(nip70: Arc<dyn Nip70>) -> anyhow::Result<Self> {
         if Path::new(NIP70_UDS_ADDRESS).exists() {
             std::fs::remove_file(NIP70_UDS_ADDRESS)?;
@@ -121,61 +118,53 @@ impl std::ops::Drop for Nip70Server {
     }
 }
 
-#[derive(Default)]
-pub struct Nip70Client {}
+async fn make_rpc(request: &Nip70Request) -> anyhow::Result<Nip70Response> {
+    // Open up a UDS connection to the server.
+    let mut socket = UnixStream::connect(NIP70_UDS_ADDRESS).await?;
 
-impl Nip70Client {
-    async fn make_rpc(request: &Nip70Request) -> anyhow::Result<Nip70Response> {
-        // Open up a UDS connection to the server.
-        let mut socket = UnixStream::connect(NIP70_UDS_ADDRESS).await?;
+    // Send the request.
+    let serialized_request = &serde_json::to_vec(request)?;
+    let mut bytes_written = 0;
+    while bytes_written < serialized_request.len() {
+        socket.writable().await?;
+        bytes_written += socket
+            .try_write(&serialized_request[bytes_written..])
+            .unwrap_or(0);
+    }
+    socket.flush().await?;
 
-        // Send the request.
-        let serialized_request = &serde_json::to_vec(request)?;
-        let mut bytes_written = 0;
-        while bytes_written < serialized_request.len() {
-            socket.writable().await?;
-            bytes_written += socket
-                .try_write(&serialized_request[bytes_written..])
-                .unwrap_or(0);
-        }
-        socket.flush().await?;
+    // Read the response from the server.
+    // TODO: Add a timeout to this read operation.
+    socket.readable().await?;
+    let mut buf = Vec::new();
+    socket.read_to_end(&mut buf).await?;
+    Ok(serde_json::from_slice::<Nip70Response>(&buf)?)
+}
 
-        // Read the response from the server.
-        // TODO: Add a timeout to this read operation.
-        socket.readable().await?;
-        let mut buf = Vec::new();
-        socket.read_to_end(&mut buf).await?;
-        Ok(serde_json::from_slice::<Nip70Response>(&buf)?)
+pub async fn get_public_key() -> anyhow::Result<XOnlyPublicKey> {
+    let response = make_rpc(&Nip70Request::GetPublicKey).await?;
+    if let Nip70Response::PublicKey(public_key) = response {
+        Ok(public_key)
+    } else {
+        anyhow::bail!("Unexpected response from server!")
     }
 }
 
-#[async_trait]
-impl Nip70 for Nip70Client {
-    async fn get_public_key(&self) -> anyhow::Result<XOnlyPublicKey> {
-        let response = Self::make_rpc(&Nip70Request::GetPublicKey).await?;
-        if let Nip70Response::PublicKey(public_key) = response {
-            Ok(public_key)
-        } else {
-            anyhow::bail!("Unexpected response from server!")
-        }
+pub async fn sign_event(event: UnsignedEvent) -> anyhow::Result<Event> {
+    let response = make_rpc(&Nip70Request::SignEvent(event)).await?;
+    if let Nip70Response::Event(event) = response {
+        Ok(event)
+    } else {
+        anyhow::bail!("Unexpected response from server!")
     }
+}
 
-    async fn sign_event(&self, event: UnsignedEvent) -> anyhow::Result<Event> {
-        let response = Self::make_rpc(&Nip70Request::SignEvent(event)).await?;
-        if let Nip70Response::Event(event) = response {
-            Ok(event)
-        } else {
-            anyhow::bail!("Unexpected response from server!")
-        }
-    }
-
-    async fn get_relays(&self) -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
-        let response = Self::make_rpc(&Nip70Request::GetRelays).await?;
-        if let Nip70Response::Relays(relays) = response {
-            Ok(relays)
-        } else {
-            anyhow::bail!("Unexpected response from server!")
-        }
+pub async fn get_relays() -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
+    let response = make_rpc(&Nip70Request::GetRelays).await?;
+    if let Nip70Response::Relays(relays) = response {
+        Ok(relays)
+    } else {
+        anyhow::bail!("Unexpected response from server!")
     }
 }
 
@@ -236,11 +225,10 @@ mod tests {
     async fn get_public_key_over_uds() {
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
         let server = Nip70Server::new(nip70.clone()).unwrap();
-        let client = Nip70Client::default();
 
         assert_eq!(
             nip70.get_public_key().await.unwrap(),
-            client.get_public_key().await.unwrap()
+            get_public_key().await.unwrap()
         );
     }
 
@@ -248,9 +236,8 @@ mod tests {
     async fn sign_event_over_uds() {
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
         let server = Nip70Server::new(nip70.clone()).unwrap();
-        let client = Nip70Client::default();
 
-        let pubkey = client.get_public_key().await.unwrap();
+        let pubkey = get_public_key().await.unwrap();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -264,7 +251,7 @@ mod tests {
             content,
         };
 
-        let event = client.sign_event(unsigned_event).await.unwrap();
+        let event = sign_event(unsigned_event).await.unwrap();
 
         assert!(event.verify().is_ok());
     }
@@ -273,9 +260,8 @@ mod tests {
     async fn sign_large_event_over_uds() {
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
         let server = Nip70Server::new(nip70.clone()).unwrap();
-        let client = Nip70Client::default();
 
-        let pubkey = client.get_public_key().await.unwrap();
+        let pubkey = get_public_key().await.unwrap();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -289,7 +275,7 @@ mod tests {
             content,
         };
 
-        let event = client.sign_event(unsigned_event).await.unwrap();
+        let event = sign_event(unsigned_event).await.unwrap();
 
         assert!(event.verify().is_ok());
     }
@@ -302,9 +288,8 @@ mod tests {
         let mut client_handles = Vec::new();
         for i in 0..128 {
             let handle = tokio::spawn(async move {
-                let client = Nip70Client::default();
                 for j in 0..20 {
-                    let pubkey = client.get_public_key().await.unwrap();
+                    let pubkey = get_public_key().await.unwrap();
                     let created_at = Timestamp::now();
                     let kind = Kind::TextNote;
                     let tags = vec![];
@@ -318,7 +303,7 @@ mod tests {
                         content,
                     };
 
-                    let event = client.sign_event(unsigned_event.clone()).await.unwrap();
+                    let event = sign_event(unsigned_event.clone()).await.unwrap();
 
                     assert!(event.verify().is_ok());
                     assert_eq!(event.id, unsigned_event.id);
@@ -337,9 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn make_rpc_with_no_server() {
-        let client = Nip70Client::default();
-
         // TODO: Check more about this than just whether it's an error.
-        assert!(client.get_public_key().await.is_err());
+        assert!(get_public_key().await.is_err());
     }
 }
