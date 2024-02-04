@@ -74,13 +74,12 @@ impl Nip70Server {
                                 for byte in &buf[..nbytes] {
                                     rolling_buf.push(*byte);
                                 }
-                                if let Ok(parsed_request) =
-                                    serde_json::from_slice::<Nip70Request>(&rolling_buf)
-                                {
-                                    request = parsed_request;
-                                    break;
-                                }
-                            };
+                            } else if let Ok(parsed_request) =
+                                serde_json::from_slice::<Nip70Request>(&rolling_buf)
+                            {
+                                request = parsed_request;
+                                break;
+                            }
                         }
 
                         let response_or = Self::handle_incoming_request(request, inner_nip70).await;
