@@ -12,6 +12,7 @@ const NIP70_UDS_ADDRESS: &str = "/tmp/nip70.sock";
 const BUFFER_SIZE: usize = 1024;
 
 // Defines the server-side functionality for the NIP-70 protocol.
+// Implement this trait and pass it to `Nip70Server::new()` to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
     // -----------------
@@ -35,14 +36,16 @@ pub trait Nip70: Send + Sync {
     }
 }
 
-// Accepts a `Nip70` implementation and binds to a Unix domain socket.
+// Runs a NIP-70 compliant Unix domain socket server.
 pub struct Nip70Server {
     uds_task_handle: tokio::task::JoinHandle<()>,
     uds_address: String,
 }
 
 impl Nip70Server {
-    /// Creates a new `Nip70Server` instance and binds to a Unix domain socket.
+    /// Creates a new `Nip70Server` instance and binds to the NIP-70 Unix domain socket.
+    /// The server will listen for incoming NIP-70 requests and respond to them, and will
+    /// run until the returned `Nip70Server` instance is dropped.
     pub fn new(nip70: Arc<dyn Nip70>) -> anyhow::Result<Self> {
         Self::new_internal(nip70, NIP70_UDS_ADDRESS.to_string())
     }
@@ -127,8 +130,9 @@ impl std::ops::Drop for Nip70Server {
 }
 
 // TODO: Test error handling more thoroughly.
+/// Errors that can occur when using the NIP-70 client.
 #[derive(Debug, PartialEq)]
-pub enum Nip70Error {
+pub enum Nip70ClientError {
     /// The NIP-70 Unix domain socket server is not running.
     ServerNotRunning,
 
@@ -139,16 +143,16 @@ pub enum Nip70Error {
     ProtocolError,
 }
 
-impl std::fmt::Display for Nip70Error {
+impl std::fmt::Display for Nip70ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Nip70Error::ServerNotRunning => {
+            Nip70ClientError::ServerNotRunning => {
                 write!(f, "NIP-70 Unix domain socket server not running.")
             }
-            Nip70Error::UdsSocketError => {
+            Nip70ClientError::UdsSocketError => {
                 write!(f, "Error writing to or reading from Unix domain socket.")
             }
-            Nip70Error::ProtocolError => {
+            Nip70ClientError::ProtocolError => {
                 write!(
                     f,
                     "Error encoding or decoding messages according to the NIP-70 protocol."
@@ -158,22 +162,26 @@ impl std::fmt::Display for Nip70Error {
     }
 }
 
-impl std::error::Error for Nip70Error {}
+impl std::error::Error for Nip70ClientError {}
 
-async fn make_rpc(request: &Nip70Request, uds_address: &str) -> Result<Nip70Response, Nip70Error> {
+async fn make_rpc(
+    request: &Nip70Request,
+    uds_address: &str,
+) -> Result<Nip70Response, Nip70ClientError> {
     // Open up a UDS connection to the server.
     let mut socket = UnixStream::connect(uds_address)
         .await
-        .map_err(|_| Nip70Error::ServerNotRunning)?;
+        .map_err(|_| Nip70ClientError::ServerNotRunning)?;
 
     // Send the request.
-    let serialized_request = &serde_json::to_vec(request).map_err(|_| Nip70Error::ProtocolError)?;
+    let serialized_request =
+        &serde_json::to_vec(request).map_err(|_| Nip70ClientError::ProtocolError)?;
     let mut bytes_written = 0;
     while bytes_written < serialized_request.len() {
         socket
             .writable()
             .await
-            .map_err(|_| Nip70Error::UdsSocketError)?;
+            .map_err(|_| Nip70ClientError::UdsSocketError)?;
         bytes_written += socket
             .try_write(&serialized_request[bytes_written..])
             .unwrap_or(0);
@@ -181,60 +189,71 @@ async fn make_rpc(request: &Nip70Request, uds_address: &str) -> Result<Nip70Resp
     socket
         .flush()
         .await
-        .map_err(|_| Nip70Error::UdsSocketError)?;
+        .map_err(|_| Nip70ClientError::UdsSocketError)?;
 
     // Read the response from the server.
     // TODO: Add a timeout to this read operation.
     socket
         .readable()
         .await
-        .map_err(|_| Nip70Error::UdsSocketError)?;
+        .map_err(|_| Nip70ClientError::UdsSocketError)?;
     let mut buf = Vec::new();
     socket
         .read_to_end(&mut buf)
         .await
-        .map_err(|_| Nip70Error::UdsSocketError)?;
-    Ok(serde_json::from_slice::<Nip70Response>(&buf).map_err(|_| Nip70Error::ProtocolError)?)
+        .map_err(|_| Nip70ClientError::UdsSocketError)?;
+    Ok(serde_json::from_slice::<Nip70Response>(&buf)
+        .map_err(|_| Nip70ClientError::ProtocolError)?)
 }
 
-pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70Error> {
+/// Fetches the public key of the signed-in user from the NIP-70 server.
+/// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
+pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70ClientError> {
     get_public_key_internal(NIP70_UDS_ADDRESS).await
 }
 
-async fn get_public_key_internal(uds_address: &str) -> Result<XOnlyPublicKey, Nip70Error> {
+async fn get_public_key_internal(uds_address: &str) -> Result<XOnlyPublicKey, Nip70ClientError> {
     let response = make_rpc(&Nip70Request::GetPublicKey, uds_address).await?;
     if let Nip70Response::PublicKey(public_key) = response {
         Ok(public_key)
     } else {
-        Err(Nip70Error::ProtocolError)
+        Err(Nip70ClientError::ProtocolError)
     }
 }
 
-pub async fn sign_event(event: UnsignedEvent) -> Result<Event, Nip70Error> {
+/// Signs a Nostr event on behalf of the signed-in user using the NIP-70 server.
+/// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
+pub async fn sign_event(event: UnsignedEvent) -> Result<Event, Nip70ClientError> {
     sign_event_internal(event, NIP70_UDS_ADDRESS).await
 }
 
-async fn sign_event_internal(event: UnsignedEvent, uds_address: &str) -> Result<Event, Nip70Error> {
+async fn sign_event_internal(
+    event: UnsignedEvent,
+    uds_address: &str,
+) -> Result<Event, Nip70ClientError> {
     let response = make_rpc(&Nip70Request::SignEvent(event), uds_address).await?;
     if let Nip70Response::Event(event) = response {
         Ok(event)
     } else {
-        Err(Nip70Error::ProtocolError)
+        Err(Nip70ClientError::ProtocolError)
     }
 }
 
-pub async fn get_relays() -> Result<Option<HashMap<String, RelayPolicy>>, Nip70Error> {
+/// Fetches the list of relays that the NIP-70 server is aware of.
+/// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
+/// If the server does not support this feature, returns `Ok(None)`.
+pub async fn get_relays() -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
     get_relays_internal(NIP70_UDS_ADDRESS).await
 }
 
 async fn get_relays_internal(
     uds_address: &str,
-) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70Error> {
+) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
     let response = make_rpc(&Nip70Request::GetRelays, uds_address).await?;
     if let Nip70Response::Relays(relays) = response {
         Ok(relays)
     } else {
-        Err(Nip70Error::ProtocolError)
+        Err(Nip70ClientError::ProtocolError)
     }
 }
 
@@ -254,6 +273,7 @@ enum Nip70Response {
     Relays(Option<HashMap<String, RelayPolicy>>),
 }
 
+/// A policy that specifies whether a relay is allowed to read or write to the server.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RelayPolicy {
     read: bool,
@@ -416,6 +436,9 @@ mod tests {
     async fn make_rpc_with_no_server() {
         let public_key_or = get_public_key().await;
         assert!(public_key_or.is_err());
-        assert_eq!(public_key_or.unwrap_err(), Nip70Error::ServerNotRunning);
+        assert_eq!(
+            public_key_or.unwrap_err(),
+            Nip70ClientError::ServerNotRunning
+        );
     }
 }
