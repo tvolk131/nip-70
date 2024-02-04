@@ -11,6 +11,17 @@ use tokio::task::JoinHandle;
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip70.sock";
 const BUFFER_SIZE: usize = 1024;
 
+/// Errors that can be returned from [`Nip70`] trait functions.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Nip70ServerError {
+    /// The server rejected the request. This most likely means that the user
+    /// declined to perform the operation for the app that requested it.
+    Rejected,
+
+    /// The server encountered an internal error while processing the request.
+    InternalError,
+}
+
 // Defines the server-side functionality for the NIP-70 protocol.
 // Implement this trait and pass it to `Nip70Server::new()` to run a NIP-70 server.
 #[async_trait]
@@ -20,10 +31,10 @@ pub trait Nip70: Send + Sync {
     // -----------------
 
     /// Returns the public key of the signed-in user.
-    async fn get_public_key(&self) -> anyhow::Result<XOnlyPublicKey>;
+    async fn get_public_key(&self) -> Result<XOnlyPublicKey, Nip70ServerError>;
 
     /// Signs a Nostr event on behalf of the signed-in user.
-    async fn sign_event(&self, event: UnsignedEvent) -> anyhow::Result<Event>;
+    async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError>;
 
     // -----------------
     // Optional methods.
@@ -31,7 +42,7 @@ pub trait Nip70: Send + Sync {
 
     // Returns the list of relays that the server is aware of, or `None` if
     // the server does not support this feature.
-    async fn get_relays(&self) -> anyhow::Result<Option<HashMap<String, RelayPolicy>>> {
+    async fn get_relays(&self) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ServerError> {
         Ok(None)
     }
 }
@@ -82,16 +93,12 @@ impl Nip70Server {
                             }
                         }
 
-                        let response_or = Self::handle_incoming_request(request, inner_nip70).await;
+                        let response = Self::handle_incoming_request(request, inner_nip70).await;
+                        let serialized_response = serde_json::to_vec(&response)?;
 
                         socket.writable().await?;
-                        // TODO: Handle the error case, and write an error response to the socket.
-                        if let Ok(response) = response_or {
-                            if let Ok(serialized_response) = serde_json::to_vec(&response) {
-                                socket.write_all(&serialized_response).await?;
-                                socket.shutdown().await?;
-                            }
-                        }
+                        socket.write_all(&serialized_response).await?;
+                        socket.shutdown().await?;
 
                         Ok(())
                     });
@@ -108,13 +115,22 @@ impl Nip70Server {
     async fn handle_incoming_request(
         request: Nip70Request,
         nip70: Arc<dyn Nip70>,
-    ) -> anyhow::Result<Nip70Response> {
-        Ok(match request {
-            Nip70Request::GetPublicKey => Nip70Response::PublicKey(nip70.get_public_key().await?),
+    ) -> Nip70Response {
+        match request {
+            Nip70Request::GetPublicKey => match nip70.get_public_key().await {
+                Ok(public_key) => Nip70Response::PublicKey(public_key),
+                Err(err) => Nip70Response::Error(err),
+            },
             // TODO: Let's get the pubkey and check it against the unsigned event before signing.
-            Nip70Request::SignEvent(event) => Nip70Response::Event(nip70.sign_event(event).await?),
-            Nip70Request::GetRelays => Nip70Response::Relays(nip70.get_relays().await?),
-        })
+            Nip70Request::SignEvent(event) => match nip70.sign_event(event).await {
+                Ok(event) => Nip70Response::Event(event),
+                Err(err) => Nip70Response::Error(err),
+            },
+            Nip70Request::GetRelays => match nip70.get_relays().await {
+                Ok(relays) => Nip70Response::Relays(relays),
+                Err(err) => Nip70Response::Error(err),
+            },
+        }
     }
 }
 
@@ -140,6 +156,9 @@ pub enum Nip70ClientError {
 
     /// A NIP-70 protocol-level error occurred while encoding or decoding messages.
     ProtocolError,
+
+    /// Server returned an error.
+    ServerError(Nip70ServerError),
 }
 
 impl std::fmt::Display for Nip70ClientError {
@@ -156,6 +175,9 @@ impl std::fmt::Display for Nip70ClientError {
                     f,
                     "Error encoding or decoding messages according to the NIP-70 protocol."
                 )
+            }
+            Nip70ClientError::ServerError(err) => {
+                write!(f, "Server returned an error: {:?}.", err)
             }
         }
     }
@@ -213,10 +235,10 @@ pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70ClientError> {
 
 async fn get_public_key_internal(uds_address: &str) -> Result<XOnlyPublicKey, Nip70ClientError> {
     let response = make_rpc(&Nip70Request::GetPublicKey, uds_address).await?;
-    if let Nip70Response::PublicKey(public_key) = response {
-        Ok(public_key)
-    } else {
-        Err(Nip70ClientError::ProtocolError)
+    match response {
+        Nip70Response::PublicKey(public_key) => Ok(public_key),
+        Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
+        _ => Err(Nip70ClientError::ProtocolError),
     }
 }
 
@@ -231,10 +253,10 @@ async fn sign_event_internal(
     uds_address: &str,
 ) -> Result<Event, Nip70ClientError> {
     let response = make_rpc(&Nip70Request::SignEvent(event), uds_address).await?;
-    if let Nip70Response::Event(event) = response {
-        Ok(event)
-    } else {
-        Err(Nip70ClientError::ProtocolError)
+    match response {
+        Nip70Response::Event(event) => Ok(event),
+        Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
+        _ => Err(Nip70ClientError::ProtocolError),
     }
 }
 
@@ -249,10 +271,10 @@ async fn get_relays_internal(
     uds_address: &str,
 ) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
     let response = make_rpc(&Nip70Request::GetRelays, uds_address).await?;
-    if let Nip70Response::Relays(relays) = response {
-        Ok(relays)
-    } else {
-        Err(Nip70ClientError::ProtocolError)
+    match response {
+        Nip70Response::Relays(relays) => Ok(relays),
+        Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
+        _ => Err(Nip70ClientError::ProtocolError),
     }
 }
 
@@ -270,6 +292,7 @@ enum Nip70Response {
     PublicKey(XOnlyPublicKey),
     Event(Event),
     Relays(Option<HashMap<String, RelayPolicy>>),
+    Error(Nip70ServerError),
 }
 
 /// A policy that specifies whether a relay is allowed to read or write to the server.
@@ -289,13 +312,43 @@ mod tests {
 
     struct TestNip70Implementation {
         keys: Keys,
+        reject_all_requests: bool,
     }
 
     impl TestNip70Implementation {
         fn new_with_generated_keys() -> Self {
             Self {
                 keys: Keys::generate(),
+                reject_all_requests: false,
             }
+        }
+
+        fn new_rejecting_all_requests() -> Self {
+            Self {
+                keys: Keys::generate(),
+                reject_all_requests: true,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Nip70 for TestNip70Implementation {
+        async fn get_public_key(&self) -> Result<XOnlyPublicKey, Nip70ServerError> {
+            if self.reject_all_requests {
+                return Err(Nip70ServerError::Rejected);
+            }
+
+            Ok(self.keys.public_key())
+        }
+
+        async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError> {
+            if self.reject_all_requests {
+                return Err(Nip70ServerError::Rejected);
+            }
+
+            event
+                .sign(&self.keys)
+                .map_err(|_| Nip70ServerError::InternalError)
         }
     }
 
@@ -308,17 +361,6 @@ mod tests {
         let uds_address = format!("/tmp/nip70-{}.sock", *counter);
         *counter += 1;
         uds_address
-    }
-
-    #[async_trait]
-    impl Nip70 for TestNip70Implementation {
-        async fn get_public_key(&self) -> anyhow::Result<XOnlyPublicKey> {
-            Ok(self.keys.public_key())
-        }
-
-        async fn sign_event(&self, event: UnsignedEvent) -> anyhow::Result<Event> {
-            Ok(event.sign(&self.keys)?)
-        }
     }
 
     #[tokio::test]
@@ -438,6 +480,20 @@ mod tests {
         assert_eq!(
             public_key_or.unwrap_err(),
             Nip70ClientError::ServerNotRunning
+        );
+    }
+
+    #[tokio::test]
+    async fn make_rpc_with_rejected_request() {
+        let uds_address = get_free_uds_address();
+        let nip70 = Arc::from(TestNip70Implementation::new_rejecting_all_requests());
+        let server = Nip70Server::new_internal(nip70, uds_address.clone()).unwrap();
+
+        let public_key_or = get_public_key_internal(&uds_address).await;
+        assert!(public_key_or.is_err());
+        assert_eq!(
+            public_key_or.unwrap_err(),
+            Nip70ClientError::ServerError(Nip70ServerError::Rejected)
         );
     }
 }
