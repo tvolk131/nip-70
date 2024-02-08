@@ -57,11 +57,11 @@ impl Nip70Server {
     /// Creates a new `Nip70Server` instance and binds to the NIP-70 Unix domain socket.
     /// The server will listen for incoming NIP-70 requests and respond to them, and will
     /// run until the returned `Nip70Server` instance is dropped.
-    pub fn new(nip70: Arc<dyn Nip70>) -> anyhow::Result<Self> {
+    pub fn new(nip70: Arc<dyn Nip70>) -> std::io::Result<Self> {
         Self::new_internal(nip70, NIP70_UDS_ADDRESS.to_string())
     }
 
-    fn new_internal(nip70: Arc<dyn Nip70>, uds_address: String) -> anyhow::Result<Self> {
+    fn new_internal(nip70: Arc<dyn Nip70>, uds_address: String) -> std::io::Result<Self> {
         if Path::new(&uds_address).exists() {
             std::fs::remove_file(&uds_address)?;
         }
