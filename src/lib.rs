@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
 
-const NIP70_UDS_ADDRESS: &str = "/tmp/nip70.sock";
+const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 const BUFFER_SIZE: usize = 1024;
 
 /// Errors that can be returned from [`Nip70`] trait functions.
