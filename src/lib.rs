@@ -36,6 +36,12 @@ pub trait Nip70: Send + Sync {
     /// Signs a Nostr event on behalf of the signed-in user.
     async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError>;
 
+    /// Pays an invoice.
+    async fn pay_invoice(
+        &self,
+        pay_invoice_request: PayInvoiceRequest,
+    ) -> Result<PayInvoiceResponse, Nip70ServerError>;
+
     // -----------------
     // Optional methods.
     // -----------------
@@ -126,6 +132,12 @@ impl Nip70Server {
                 Ok(event) => Nip70Response::Event(event),
                 Err(err) => Nip70Response::Error(err),
             },
+            Nip70Request::PayInvoice(pay_invoice_request) => {
+                match nip70.pay_invoice(pay_invoice_request).await {
+                    Ok(pay_invoice_response) => Nip70Response::InvoicePaid(pay_invoice_response),
+                    Err(err) => Nip70Response::Error(err),
+                }
+            }
             Nip70Request::GetRelays => match nip70.get_relays().await {
                 Ok(relays) => Nip70Response::Relays(relays),
                 Err(err) => Nip70Response::Error(err),
@@ -260,6 +272,25 @@ async fn sign_event_internal(
     }
 }
 
+/// Pays an invoice using the NIP-70 server.
+pub async fn pay_invoice(
+    request: PayInvoiceRequest,
+) -> Result<PayInvoiceResponse, Nip70ClientError> {
+    pay_invoice_internal(request, NIP70_UDS_ADDRESS).await
+}
+
+async fn pay_invoice_internal(
+    request: PayInvoiceRequest,
+    uds_address: &str,
+) -> Result<PayInvoiceResponse, Nip70ClientError> {
+    let response = make_rpc(&Nip70Request::PayInvoice(request), uds_address).await?;
+    match response {
+        Nip70Response::InvoicePaid(response) => Ok(response),
+        Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
+        _ => Err(Nip70ClientError::ProtocolError),
+    }
+}
+
 /// Fetches the list of relays that the NIP-70 server is aware of.
 /// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
 /// If the server does not support this feature, returns `Ok(None)`.
@@ -283,6 +314,7 @@ enum Nip70Request {
     #[serde(rename = "pubKey")]
     GetPublicKey,
     SignEvent(UnsignedEvent),
+    PayInvoice(PayInvoiceRequest),
     GetRelays,
 }
 
@@ -291,6 +323,7 @@ enum Nip70Response {
     #[serde(rename = "pubKey")]
     PublicKey(XOnlyPublicKey),
     Event(Event),
+    InvoicePaid(PayInvoiceResponse),
     Relays(Option<HashMap<String, RelayPolicy>>),
     Error(Nip70ServerError),
 }
@@ -300,6 +333,26 @@ enum Nip70Response {
 pub struct RelayPolicy {
     read: bool,
     write: bool,
+}
+
+/// A request to pay an invoice.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PayInvoiceRequest {
+    /// Bolt11 invoice to pay.
+    invoice: String,
+}
+
+/// A response to a pay invoice request.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+pub enum PayInvoiceResponse {
+    /// The invoice was paid successfully. Contains the preimage of the payment.
+    Success(String),
+
+    /// The invoice was not paid successfully. Contains the reason for the failure.
+    ErrorPaymentFailed(String),
+
+    /// The invoice was malformed and could not be paid.
+    ErrorMalformedInvoice,
 }
 
 #[cfg(test)]
@@ -349,6 +402,20 @@ mod tests {
             event
                 .sign(&self.keys)
                 .map_err(|_| Nip70ServerError::InternalError)
+        }
+
+        async fn pay_invoice(
+            &self,
+            pay_invoice_request: PayInvoiceRequest,
+        ) -> Result<PayInvoiceResponse, Nip70ServerError> {
+            if self.reject_all_requests {
+                return Err(Nip70ServerError::Rejected);
+            }
+
+            Ok(PayInvoiceResponse::Success(format!(
+                "preimage for invoice {}",
+                pay_invoice_request.invoice
+            )))
         }
     }
 
@@ -400,6 +467,25 @@ mod tests {
             .unwrap();
 
         assert!(event.verify().is_ok());
+    }
+
+    #[tokio::test]
+    async fn pay_invoice_over_uds() {
+        let uds_address = get_free_uds_address();
+        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
+        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
+
+        let invoice = String::from("lnbc1...");
+
+        let pay_invoice_response =
+            pay_invoice_internal(PayInvoiceRequest { invoice }, &uds_address)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            pay_invoice_response,
+            PayInvoiceResponse::Success("preimage for invoice lnbc1...".to_string())
+        );
     }
 
     #[tokio::test]
