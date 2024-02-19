@@ -343,6 +343,12 @@ pub struct PayInvoiceRequest {
     invoice: String,
 }
 
+impl PayInvoiceRequest {
+    pub fn invoice(&self) -> &str {
+        &self.invoice
+    }
+}
+
 /// A response to a pay invoice request.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum PayInvoiceResponse {
