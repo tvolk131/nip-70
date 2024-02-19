@@ -1,16 +1,29 @@
 use async_trait::async_trait;
+use json_rpc::uds::{
+    UdsClientError, UnixDomainSocketJsonRpcClientTransport, UnixDomainSocketJsonRpcServerTransport,
+};
+use json_rpc::{
+    JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse,
+    JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
+};
+use lightning_invoice::Bolt11Invoice;
 use nostr_sdk::secp256k1::XOnlyPublicKey;
 use nostr_sdk::{Event, UnsignedEvent};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::json;
 use std::collections::HashMap;
-use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
-use tokio::task::JoinHandle;
+
+mod json_rpc;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 const BUFFER_SIZE: usize = 1024;
+
+const METHOD_NAME_GET_PUBLIC_KEY: &str = "getPublicKey";
+const METHOD_NAME_SIGN_EVENT: &str = "signEvent";
+const METHOD_NAME_PAY_INVOICE: &str = "payInvoice";
+const METHOD_NAME_GET_RELAYS: &str = "getRelays";
 
 /// Errors that can be returned from [`Nip70`] trait functions.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -55,201 +68,99 @@ pub trait Nip70: Send + Sync {
 }
 
 // Runs a NIP-70 compliant Unix domain socket server.
-pub struct Nip70Server {
-    uds_task_handle: tokio::task::JoinHandle<()>,
+pub fn run_nip70_server(nip70: Arc<dyn Nip70>) -> std::io::Result<JsonRpcServer> {
+    run_nip70_server_internal(nip70, NIP70_UDS_ADDRESS.to_string())
+}
+
+fn run_nip70_server_internal(
+    nip70: Arc<dyn Nip70>,
     uds_address: String,
-}
-
-impl Nip70Server {
-    /// Creates a new `Nip70Server` instance and binds to the NIP-70 Unix domain socket.
-    /// The server will listen for incoming NIP-70 requests and respond to them, and will
-    /// run until the returned `Nip70Server` instance is dropped.
-    pub fn new(nip70: Arc<dyn Nip70>) -> std::io::Result<Self> {
-        Self::new_internal(nip70, NIP70_UDS_ADDRESS.to_string())
-    }
-
-    fn new_internal(nip70: Arc<dyn Nip70>, uds_address: String) -> std::io::Result<Self> {
-        if Path::new(&uds_address).exists() {
-            std::fs::remove_file(&uds_address)?;
-        }
-
-        let listener = UnixListener::bind(&uds_address)?;
-
-        let uds_task_handle = tokio::spawn(async move {
-            loop {
-                let inner_nip70 = nip70.clone();
-                if let Ok((mut socket, _)) = listener.accept().await {
-                    // TODO: Grab the task handle and cancel it when the server is dropped.
-                    let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-                        let mut buf = vec![0; BUFFER_SIZE];
-                        let mut rolling_buf: Vec<u8> = Vec::new();
-                        let request: Nip70Request;
-
-                        // TODO: Add a timeout to this read operation.
-                        loop {
-                            socket.readable().await?;
-                            if let Ok(nbytes) = socket.try_read(&mut buf) {
-                                for byte in &buf[..nbytes] {
-                                    rolling_buf.push(*byte);
-                                }
-                            } else if let Ok(parsed_request) =
-                                serde_json::from_slice::<Nip70Request>(&rolling_buf)
-                            {
-                                request = parsed_request;
-                                break;
-                            }
-                        }
-
-                        let response = Self::handle_incoming_request(request, inner_nip70).await;
-                        let serialized_response = serde_json::to_vec(&response)?;
-
-                        socket.writable().await?;
-                        socket.write_all(&serialized_response).await?;
-                        socket.shutdown().await?;
-
-                        Ok(())
-                    });
-                }
-            }
-        });
-
-        Ok(Nip70Server {
-            uds_task_handle,
+) -> std::io::Result<JsonRpcServer> {
+    Ok(JsonRpcServer::new(
+        Box::from(UnixDomainSocketJsonRpcServerTransport::connect_and_start(
             uds_address,
-        })
-    }
+            BUFFER_SIZE,
+        )?),
+        Box::from(Nip70ServerHandler { nip70 }),
+    ))
+}
 
-    async fn handle_incoming_request(
-        request: Nip70Request,
-        nip70: Arc<dyn Nip70>,
-    ) -> Nip70Response {
-        match request {
-            Nip70Request::GetPublicKey => match nip70.get_public_key().await {
-                Ok(public_key) => Nip70Response::PublicKey(public_key),
-                Err(err) => Nip70Response::Error(err),
-            },
-            // TODO: Let's get the pubkey and check it against the unsigned event before signing.
-            Nip70Request::SignEvent(event) => match nip70.sign_event(event).await {
-                Ok(event) => Nip70Response::Event(event),
-                Err(err) => Nip70Response::Error(err),
-            },
-            Nip70Request::PayInvoice(pay_invoice_request) => {
-                match nip70.pay_invoice(pay_invoice_request).await {
-                    Ok(pay_invoice_response) => Nip70Response::InvoicePaid(pay_invoice_response),
-                    Err(err) => Nip70Response::Error(err),
+struct Nip70ServerHandler {
+    nip70: Arc<dyn Nip70>,
+}
+
+#[async_trait::async_trait]
+impl JsonRpcServerHandler for Nip70ServerHandler {
+    async fn handle_batch_request(&self, requests: Vec<JsonRpcRequest>) -> Vec<JsonRpcResponse> {
+        let mut responses = Vec::new();
+
+        for request in requests {
+            let parsed_request = match Nip70Request::from_json_rpc_request(&request) {
+                Ok(request) => request,
+                Err(error) => {
+                    responses.push(JsonRpcResponse::new(
+                        JsonRpcResponseData::Error { error },
+                        request.id(),
+                    ));
+                    continue;
                 }
-            }
-            Nip70Request::GetRelays => match nip70.get_relays().await {
-                Ok(relays) => Nip70Response::Relays(relays),
-                Err(err) => Nip70Response::Error(err),
-            },
+            };
+
+            let response = match parsed_request {
+                Nip70Request::GetPublicKey => match self.nip70.get_public_key().await {
+                    Ok(public_key) => Nip70Response::PublicKey(public_key),
+                    Err(err) => Nip70Response::Error(err),
+                },
+                // TODO: Let's get the pubkey and check it against the unsigned event before signing.
+                Nip70Request::SignEvent(event) => match self.nip70.sign_event(event).await {
+                    Ok(event) => Nip70Response::Event(event),
+                    Err(err) => Nip70Response::Error(err),
+                },
+                Nip70Request::PayInvoice(pay_invoice_request) => {
+                    match self.nip70.pay_invoice(pay_invoice_request).await {
+                        Ok(pay_invoice_response) => {
+                            Nip70Response::InvoicePaid(pay_invoice_response)
+                        }
+                        Err(err) => Nip70Response::Error(err),
+                    }
+                }
+                Nip70Request::GetRelays => match self.nip70.get_relays().await {
+                    Ok(relays) => Nip70Response::Relays(relays),
+                    Err(err) => Nip70Response::Error(err),
+                },
+            };
+
+            responses.push(response.to_json_rpc_response(request.id()));
         }
+
+        responses
     }
 }
 
-impl std::ops::Drop for Nip70Server {
-    fn drop(&mut self) {
-        // Abort the UDS task, since it will loop forever otherwise.
-        self.uds_task_handle.abort();
-
-        // Try to remove the UDS file. If it fails, it's not a big deal.
-        let _ = std::fs::remove_file(&self.uds_address);
-    }
-}
-
-// TODO: Test error handling more thoroughly.
-/// Errors that can occur when using the NIP-70 client.
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Nip70ClientError {
-    /// The NIP-70 Unix domain socket server is not running.
-    ServerNotRunning,
-
-    /// An I/O error occurred while writing to or reading from the Unix domain socket.
-    UdsSocketError,
-
-    /// A NIP-70 protocol-level error occurred while encoding or decoding messages.
+    UdsClientError(UdsClientError),
     ProtocolError,
-
-    /// Server returned an error.
     ServerError(Nip70ServerError),
 }
 
-impl std::fmt::Display for Nip70ClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Nip70ClientError::ServerNotRunning => {
-                write!(f, "NIP-70 Unix domain socket server not running.")
-            }
-            Nip70ClientError::UdsSocketError => {
-                write!(f, "Error writing to or reading from Unix domain socket.")
-            }
-            Nip70ClientError::ProtocolError => {
-                write!(
-                    f,
-                    "Error encoding or decoding messages according to the NIP-70 protocol."
-                )
-            }
-            Nip70ClientError::ServerError(err) => {
-                write!(f, "Server returned an error: {:?}.", err)
-            }
-        }
-    }
-}
-
-impl std::error::Error for Nip70ClientError {}
-
-async fn make_rpc(
-    request: &Nip70Request,
-    uds_address: &str,
-) -> Result<Nip70Response, Nip70ClientError> {
-    // Open up a UDS connection to the server.
-    let mut socket = UnixStream::connect(uds_address)
-        .await
-        .map_err(|_| Nip70ClientError::ServerNotRunning)?;
-
-    // Send the request.
-    let serialized_request =
-        &serde_json::to_vec(request).map_err(|_| Nip70ClientError::ProtocolError)?;
-    let mut bytes_written = 0;
-    while bytes_written < serialized_request.len() {
-        socket
-            .writable()
-            .await
-            .map_err(|_| Nip70ClientError::UdsSocketError)?;
-        bytes_written += socket
-            .try_write(&serialized_request[bytes_written..])
-            .unwrap_or(0);
-    }
-    socket
-        .flush()
-        .await
-        .map_err(|_| Nip70ClientError::UdsSocketError)?;
-
-    // Read the response from the server.
-    // TODO: Add a timeout to this read operation.
-    socket
-        .readable()
-        .await
-        .map_err(|_| Nip70ClientError::UdsSocketError)?;
-    let mut buf = Vec::new();
-    socket
-        .read_to_end(&mut buf)
-        .await
-        .map_err(|_| Nip70ClientError::UdsSocketError)?;
-    Ok(serde_json::from_slice::<Nip70Response>(&buf)
-        .map_err(|_| Nip70ClientError::ProtocolError)?)
-}
-
 /// Fetches the public key of the signed-in user from the NIP-70 server.
-/// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
+/// If no server is running, returns `Err(Nip70ClientError::UdsClientError(UdsClientError::ServerNotRunning))`.
 pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70ClientError> {
-    get_public_key_internal(NIP70_UDS_ADDRESS).await
+    get_public_key_internal(NIP70_UDS_ADDRESS.to_string()).await
 }
 
-async fn get_public_key_internal(uds_address: &str) -> Result<XOnlyPublicKey, Nip70ClientError> {
-    let response = make_rpc(&Nip70Request::GetPublicKey, uds_address).await?;
-    match response {
-        Nip70Response::PublicKey(public_key) => Ok(public_key),
+async fn get_public_key_internal(uds_address: String) -> Result<XOnlyPublicKey, Nip70ClientError> {
+    // TODO: Get a real request id.
+    let json_rpc_request = Nip70Request::GetPublicKey.to_json_rpc_request(1234);
+    let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
+        .send_request(json_rpc_request.clone())
+        .await
+        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+    match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
+        .map_err(|_| Nip70ClientError::UdsClientError(UdsClientError::ProtocolError))?
+    {
+        Nip70Response::PublicKey(response) => Ok(response),
         Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
         _ => Err(Nip70ClientError::ProtocolError),
     }
@@ -258,16 +169,23 @@ async fn get_public_key_internal(uds_address: &str) -> Result<XOnlyPublicKey, Ni
 /// Signs a Nostr event on behalf of the signed-in user using the NIP-70 server.
 /// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
 pub async fn sign_event(event: UnsignedEvent) -> Result<Event, Nip70ClientError> {
-    sign_event_internal(event, NIP70_UDS_ADDRESS).await
+    sign_event_internal(event, NIP70_UDS_ADDRESS.to_string()).await
 }
 
 async fn sign_event_internal(
     event: UnsignedEvent,
-    uds_address: &str,
+    uds_address: String,
 ) -> Result<Event, Nip70ClientError> {
-    let response = make_rpc(&Nip70Request::SignEvent(event), uds_address).await?;
-    match response {
-        Nip70Response::Event(event) => Ok(event),
+    // TODO: Get a real request id.
+    let json_rpc_request = Nip70Request::SignEvent(event).to_json_rpc_request(1234);
+    let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
+        .send_request(json_rpc_request.clone())
+        .await
+        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+    match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
+        .map_err(|_| Nip70ClientError::ProtocolError)?
+    {
+        Nip70Response::Event(response) => Ok(response),
         Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
         _ => Err(Nip70ClientError::ProtocolError),
     }
@@ -277,15 +195,22 @@ async fn sign_event_internal(
 pub async fn pay_invoice(
     request: PayInvoiceRequest,
 ) -> Result<PayInvoiceResponse, Nip70ClientError> {
-    pay_invoice_internal(request, NIP70_UDS_ADDRESS).await
+    pay_invoice_internal(request, NIP70_UDS_ADDRESS.to_string()).await
 }
 
 async fn pay_invoice_internal(
     request: PayInvoiceRequest,
-    uds_address: &str,
+    uds_address: String,
 ) -> Result<PayInvoiceResponse, Nip70ClientError> {
-    let response = make_rpc(&Nip70Request::PayInvoice(request), uds_address).await?;
-    match response {
+    // TODO: Get a real request id.
+    let json_rpc_request = Nip70Request::PayInvoice(request).to_json_rpc_request(1234);
+    let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
+        .send_request(json_rpc_request.clone())
+        .await
+        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+    match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
+        .map_err(|_| Nip70ClientError::ProtocolError)?
+    {
         Nip70Response::InvoicePaid(response) => Ok(response),
         Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
         _ => Err(Nip70ClientError::ProtocolError),
@@ -296,15 +221,22 @@ async fn pay_invoice_internal(
 /// If no server is running, returns `Err(Nip70ClientError::ServerNotRunning)`.
 /// If the server does not support this feature, returns `Ok(None)`.
 pub async fn get_relays() -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
-    get_relays_internal(NIP70_UDS_ADDRESS).await
+    get_relays_internal(NIP70_UDS_ADDRESS.to_string()).await
 }
 
 async fn get_relays_internal(
-    uds_address: &str,
+    uds_address: String,
 ) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
-    let response = make_rpc(&Nip70Request::GetRelays, uds_address).await?;
-    match response {
-        Nip70Response::Relays(relays) => Ok(relays),
+    // TODO: Get a real request id.
+    let json_rpc_request = Nip70Request::GetRelays.to_json_rpc_request(1234);
+    let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
+        .send_request(json_rpc_request.clone())
+        .await
+        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+    match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
+        .map_err(|_| Nip70ClientError::ProtocolError)?
+    {
+        Nip70Response::Relays(response) => Ok(response),
         Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
         _ => Err(Nip70ClientError::ProtocolError),
     }
@@ -312,21 +244,215 @@ async fn get_relays_internal(
 
 #[derive(Serialize, Deserialize)]
 enum Nip70Request {
-    #[serde(rename = "pubKey")]
     GetPublicKey,
     SignEvent(UnsignedEvent),
     PayInvoice(PayInvoiceRequest),
     GetRelays,
 }
 
+impl Nip70Request {
+    fn to_json_rpc_request(&self, request_id: i32) -> JsonRpcRequest {
+        match self {
+            Nip70Request::GetPublicKey => {
+                JsonRpcRequest::new(METHOD_NAME_GET_PUBLIC_KEY.to_string(), None, request_id)
+            }
+            Nip70Request::SignEvent(event) => JsonRpcRequest::new(
+                METHOD_NAME_SIGN_EVENT.to_string(),
+                Some(JsonRpcStructuredValue::Object(
+                    // This should never panic, since we're converting an `UnsignedEvent`
+                    // struct, which should always serialize to a JSON object.
+                    json!(event)
+                        .as_object()
+                        .expect("Failed to convert event to object")
+                        .clone(),
+                )),
+                request_id,
+            ),
+            Nip70Request::PayInvoice(request) => JsonRpcRequest::new(
+                METHOD_NAME_PAY_INVOICE.to_string(),
+                Some(JsonRpcStructuredValue::Object(
+                    // This should never panic, since we're converting a `PayInvoiceRequest`
+                    // struct, which should always serialize to a JSON object.
+                    json!(request)
+                        .as_object()
+                        .expect("Failed to convert request to object")
+                        .clone(),
+                )),
+                request_id,
+            ),
+            Nip70Request::GetRelays => {
+                JsonRpcRequest::new(METHOD_NAME_GET_RELAYS.to_string(), None, request_id)
+            }
+        }
+    }
+
+    fn from_json_rpc_request(request: &JsonRpcRequest) -> Result<Self, JsonRpcError> {
+        match request.method() {
+            METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Request::GetPublicKey),
+            METHOD_NAME_SIGN_EVENT => Ok(Nip70Request::SignEvent(
+                if let Ok(value) = serde_json::from_value(
+                    match request.params().clone().map(|v| v.clone().to_value()) {
+                        Some(value) => value,
+                        None => {
+                            return Err(JsonRpcError {
+                                code: JsonRpcErrorCode::InternalError,
+                                message: "Internal error".to_string(),
+                                data: None,
+                            })
+                        }
+                    },
+                ) {
+                    value
+                } else {
+                    return Err(JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "Internal error".to_string(),
+                        data: None,
+                    });
+                },
+            )),
+            METHOD_NAME_PAY_INVOICE => Ok(Nip70Request::PayInvoice(
+                if let Ok(value) = serde_json::from_value(
+                    match request.params().clone().map(|v| v.clone().to_value()) {
+                        Some(value) => value,
+                        None => {
+                            return Err(JsonRpcError {
+                                code: JsonRpcErrorCode::InternalError,
+                                message: "Internal error".to_string(),
+                                data: None,
+                            })
+                        }
+                    },
+                ) {
+                    value
+                } else {
+                    return Err(JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "Internal error".to_string(),
+                        data: None,
+                    });
+                },
+            )),
+            METHOD_NAME_GET_RELAYS => Ok(Nip70Request::GetRelays),
+            _ => Err(JsonRpcError {
+                code: JsonRpcErrorCode::MethodNotFound,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 enum Nip70Response {
-    #[serde(rename = "pubKey")]
     PublicKey(XOnlyPublicKey),
     Event(Event),
     InvoicePaid(PayInvoiceResponse),
     Relays(Option<HashMap<String, RelayPolicy>>),
     Error(Nip70ServerError),
+}
+
+impl Nip70Response {
+    fn to_json_rpc_response(&self, request_id: i32) -> JsonRpcResponse {
+        match self {
+            Nip70Response::PublicKey(response) => JsonRpcResponse::new(
+                JsonRpcResponseData::Success {
+                    result: serde_json::to_value(response).unwrap(),
+                },
+                request_id,
+            ),
+            Nip70Response::Event(response) => JsonRpcResponse::new(
+                JsonRpcResponseData::Success {
+                    result: serde_json::to_value(response).unwrap(),
+                },
+                request_id,
+            ),
+            Nip70Response::InvoicePaid(response) => JsonRpcResponse::new(
+                JsonRpcResponseData::Success {
+                    result: serde_json::to_value(response).unwrap(),
+                },
+                request_id,
+            ),
+            Nip70Response::Relays(response) => JsonRpcResponse::new(
+                JsonRpcResponseData::Success {
+                    result: serde_json::to_value(response).unwrap(),
+                },
+                request_id,
+            ),
+            Nip70Response::Error(err) => JsonRpcResponse::new(
+                JsonRpcResponseData::Error {
+                    error: JsonRpcError {
+                        code: JsonRpcErrorCode::Custom(1234),
+                        message: "Internal error".to_string(),
+                        data: None,
+                    },
+                },
+                request_id,
+            ),
+        }
+    }
+
+    fn from_json_rpc_response(
+        request: &JsonRpcRequest,
+        response: &JsonRpcResponse,
+    ) -> Result<Self, JsonRpcError> {
+        let result = match response.data() {
+            JsonRpcResponseData::Success { result } => result,
+            JsonRpcResponseData::Error { error } => return Err(error.clone()),
+        };
+
+        match request.method() {
+            METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Response::PublicKey(
+                if let Ok(value) = serde_json::from_value(result.clone()) {
+                    value
+                } else {
+                    return Err(JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "Internal error".to_string(),
+                        data: None,
+                    });
+                },
+            )),
+            METHOD_NAME_SIGN_EVENT => Ok(Nip70Response::Event(
+                if let Ok(value) = serde_json::from_value(result.clone()) {
+                    value
+                } else {
+                    return Err(JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "Internal error".to_string(),
+                        data: None,
+                    });
+                },
+            )),
+            METHOD_NAME_PAY_INVOICE => Ok(Nip70Response::InvoicePaid(
+                if let Ok(value) = serde_json::from_value(result.clone()) {
+                    value
+                } else {
+                    return Err(JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "Internal error".to_string(),
+                        data: None,
+                    });
+                },
+            )),
+            METHOD_NAME_GET_RELAYS => Ok(Nip70Response::Relays(
+                if let Ok(value) = serde_json::from_value(result.clone()) {
+                    value
+                } else {
+                    return Err(JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "Internal error".to_string(),
+                        data: None,
+                    });
+                },
+            )),
+            _ => Err(JsonRpcError {
+                code: JsonRpcErrorCode::MethodNotFound,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        }
+    }
 }
 
 /// A policy that specifies whether a relay is allowed to read or write to the server.
@@ -340,17 +466,36 @@ pub struct RelayPolicy {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct PayInvoiceRequest {
     /// Bolt11 invoice to pay.
-    invoice: String,
+    #[serde(
+        serialize_with = "serialize_to_string",
+        deserialize_with = "deserialize_from_string"
+    )]
+    invoice: Bolt11Invoice,
 }
 
 impl PayInvoiceRequest {
-    pub fn new(invoice: String) -> Self {
+    pub fn new(invoice: Bolt11Invoice) -> Self {
         Self { invoice }
     }
 
-    pub fn invoice(&self) -> &str {
+    pub fn invoice(&self) -> &Bolt11Invoice {
         &self.invoice
     }
+}
+
+fn serialize_to_string<S>(value: &Bolt11Invoice, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&value.to_string())
+}
+
+fn deserialize_from_string<'de, D>(deserializer: D) -> Result<Bolt11Invoice, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Bolt11Invoice::from_str(&s).map_err(serde::de::Error::custom)
 }
 
 /// A response to a pay invoice request.
@@ -368,11 +513,15 @@ pub enum PayInvoiceResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Mutex, time::Duration};
-
     use super::*;
 
-    use nostr_sdk::{EventId, Keys, Kind, Timestamp};
+    use bitcoin_hashes::Hash;
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+    use nostr_sdk::{
+        secp256k1::{Secp256k1, SecretKey},
+        EventId, Keys, Kind, Timestamp,
+    };
+    use std::{sync::Mutex, time::Duration};
 
     struct TestNip70Implementation {
         keys: Keys,
@@ -445,11 +594,11 @@ mod tests {
     async fn get_public_key_over_uds() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
+        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
 
         assert_eq!(
             nip70.get_public_key().await.unwrap(),
-            get_public_key_internal(&uds_address).await.unwrap()
+            get_public_key_internal(uds_address).await.unwrap()
         );
     }
 
@@ -457,9 +606,9 @@ mod tests {
     async fn sign_event_over_uds() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
+        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
 
-        let pubkey = get_public_key_internal(&uds_address).await.unwrap();
+        let pubkey = get_public_key_internal(uds_address.clone()).await.unwrap();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -473,25 +622,47 @@ mod tests {
             content,
         };
 
-        let event = sign_event_internal(unsigned_event, &uds_address)
+        let event = sign_event_internal(unsigned_event, uds_address)
             .await
             .unwrap();
 
         assert!(event.verify().is_ok());
     }
 
+    fn get_test_invoice() -> Bolt11Invoice {
+        let private_key = SecretKey::from_slice(
+            &[
+                0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f, 0xe2,
+                0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04, 0xa8, 0xca,
+                0x3b, 0x2d, 0xb7, 0x34,
+            ][..],
+        )
+        .unwrap();
+
+        let payment_hash = bitcoin_hashes::sha256::Hash::from_slice(&[0; 32][..]).unwrap();
+        let payment_secret = PaymentSecret([42u8; 32]);
+
+        InvoiceBuilder::new(Currency::Bitcoin)
+            .description("Coins pls!".into())
+            .payment_hash(payment_hash)
+            .payment_secret(payment_secret)
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn pay_invoice_over_uds() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
+        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
 
-        let invoice = String::from("lnbc1...");
+        let invoice = get_test_invoice();
 
-        let pay_invoice_response =
-            pay_invoice_internal(PayInvoiceRequest { invoice }, &uds_address)
-                .await
-                .unwrap();
+        let pay_invoice_response = pay_invoice_internal(PayInvoiceRequest { invoice }, uds_address)
+            .await
+            .unwrap();
 
         assert_eq!(
             pay_invoice_response,
@@ -503,9 +674,9 @@ mod tests {
     async fn sign_large_event_over_uds() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
+        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
 
-        let pubkey = get_public_key_internal(&uds_address).await.unwrap();
+        let pubkey = get_public_key_internal(uds_address.clone()).await.unwrap();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -519,7 +690,7 @@ mod tests {
             content,
         };
 
-        let event = sign_event_internal(unsigned_event, &uds_address)
+        let event = sign_event_internal(unsigned_event, uds_address)
             .await
             .unwrap();
 
@@ -530,14 +701,15 @@ mod tests {
     async fn sign_event_over_uds_load() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = Nip70Server::new_internal(nip70.clone(), uds_address.clone()).unwrap();
+        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
 
         let mut client_handles = Vec::new();
         for i in 0..128 {
             let uds_address = uds_address.clone();
             let handle = tokio::spawn(async move {
                 for j in 0..20 {
-                    let pubkey = get_public_key_internal(&uds_address).await.unwrap();
+                    let uds_address = uds_address.clone();
+                    let pubkey = get_public_key_internal(uds_address.clone()).await.unwrap();
                     let created_at = Timestamp::now();
                     let kind = Kind::TextNote;
                     let tags = vec![];
@@ -551,7 +723,7 @@ mod tests {
                         content,
                     };
 
-                    let event = sign_event_internal(unsigned_event.clone(), &uds_address)
+                    let event = sign_event_internal(unsigned_event.clone(), uds_address)
                         .await
                         .unwrap();
 
@@ -576,7 +748,7 @@ mod tests {
         assert!(public_key_or.is_err());
         assert_eq!(
             public_key_or.unwrap_err(),
-            Nip70ClientError::ServerNotRunning
+            Nip70ClientError::UdsClientError(UdsClientError::ServerNotRunning)
         );
     }
 
@@ -584,9 +756,9 @@ mod tests {
     async fn make_rpc_with_rejected_request() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_rejecting_all_requests());
-        let server = Nip70Server::new_internal(nip70, uds_address.clone()).unwrap();
+        let server = run_nip70_server_internal(nip70, uds_address.clone()).unwrap();
 
-        let public_key_or = get_public_key_internal(&uds_address).await;
+        let public_key_or = get_public_key_internal(uds_address).await;
         assert!(public_key_or.is_err());
         assert_eq!(
             public_key_or.unwrap_err(),
