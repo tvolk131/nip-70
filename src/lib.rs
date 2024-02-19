@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use nostr_sdk::secp256k1::XOnlyPublicKey;
 use nostr_sdk::{Event, UnsignedEvent};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 const BUFFER_SIZE: usize = 1024;
 
 /// Errors that can be returned from [`Nip70`] trait functions.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Nip70ServerError {
     /// The server rejected the request. This most likely means that the user
     /// declined to perform the operation for the app that requested it.
@@ -309,7 +310,7 @@ async fn get_relays_internal(
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 enum Nip70Request {
     #[serde(rename = "pubKey")]
     GetPublicKey,
@@ -318,7 +319,7 @@ enum Nip70Request {
     GetRelays,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 enum Nip70Response {
     #[serde(rename = "pubKey")]
     PublicKey(XOnlyPublicKey),
@@ -329,21 +330,21 @@ enum Nip70Response {
 }
 
 /// A policy that specifies whether a relay is allowed to read or write to the server.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct RelayPolicy {
     read: bool,
     write: bool,
 }
 
 /// A request to pay an invoice.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct PayInvoiceRequest {
     /// Bolt11 invoice to pay.
     invoice: String,
 }
 
 /// A response to a pay invoice request.
-#[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum PayInvoiceResponse {
     /// The invoice was paid successfully. Contains the preimage of the payment.
     Success(String),
