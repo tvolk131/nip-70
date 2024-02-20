@@ -344,6 +344,10 @@ pub struct PayInvoiceRequest {
 }
 
 impl PayInvoiceRequest {
+    pub fn new(invoice: String) -> Self {
+        Self { invoice }
+    }
+
     pub fn invoice(&self) -> &str {
         &self.invoice
     }
