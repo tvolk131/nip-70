@@ -36,6 +36,31 @@ pub enum Nip70ServerError {
     InternalError,
 }
 
+impl Nip70ServerError {
+    fn to_json_rpc_error(&self) -> JsonRpcError {
+        match self {
+            Nip70ServerError::Rejected => JsonRpcError {
+                code: JsonRpcErrorCode::Custom(1),
+                message: "Rejected".to_string(),
+                data: None,
+            },
+            Nip70ServerError::InternalError => JsonRpcError {
+                code: JsonRpcErrorCode::Custom(2),
+                message: "Internal error".to_string(),
+                data: None,
+            },
+        }
+    }
+
+    fn from_json_rpc_error(error: &JsonRpcError) -> Result<Self, JsonRpcError> {
+        match error.code {
+            JsonRpcErrorCode::Custom(1) => Ok(Nip70ServerError::Rejected),
+            JsonRpcErrorCode::Custom(2) => Ok(Nip70ServerError::InternalError),
+            _ => Err(error.clone()),
+        }
+    }
+}
+
 // Defines the server-side functionality for the NIP-70 protocol.
 // Implement this trait and pass it to `Nip70Server::new()` to run a NIP-70 server.
 #[async_trait]
@@ -158,7 +183,7 @@ async fn get_public_key_internal(uds_address: String) -> Result<XOnlyPublicKey, 
         .await
         .map_err(|err| Nip70ClientError::UdsClientError(err))?;
     match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
-        .map_err(|_| Nip70ClientError::UdsClientError(UdsClientError::ProtocolError))?
+        .map_err(|_| Nip70ClientError::ProtocolError)?
     {
         Nip70Response::PublicKey(response) => Ok(response),
         Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
@@ -381,11 +406,7 @@ impl Nip70Response {
             ),
             Nip70Response::Error(err) => JsonRpcResponse::new(
                 JsonRpcResponseData::Error {
-                    error: JsonRpcError {
-                        code: JsonRpcErrorCode::Custom(1234),
-                        message: "Internal error".to_string(),
-                        data: None,
-                    },
+                    error: err.to_json_rpc_error(),
                 },
                 request_id,
             ),
@@ -398,7 +419,12 @@ impl Nip70Response {
     ) -> Result<Self, JsonRpcError> {
         let result = match response.data() {
             JsonRpcResponseData::Success { result } => result,
-            JsonRpcResponseData::Error { error } => return Err(error.clone()),
+            JsonRpcResponseData::Error { error } => {
+                return match Nip70ServerError::from_json_rpc_error(error) {
+                    Ok(err) => Ok(Nip70Response::Error(err)),
+                    Err(err) => Err(err),
+                }
+            }
         };
 
         match request.method() {
@@ -660,13 +686,18 @@ mod tests {
 
         let invoice = get_test_invoice();
 
-        let pay_invoice_response = pay_invoice_internal(PayInvoiceRequest { invoice }, uds_address)
-            .await
-            .unwrap();
+        let pay_invoice_response = pay_invoice_internal(
+            PayInvoiceRequest {
+                invoice: invoice.clone(),
+            },
+            uds_address,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             pay_invoice_response,
-            PayInvoiceResponse::Success("preimage for invoice lnbc1...".to_string())
+            PayInvoiceResponse::Success(format!("preimage for invoice {invoice}"))
         );
     }
 

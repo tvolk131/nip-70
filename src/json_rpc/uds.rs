@@ -182,11 +182,11 @@ impl JsonRpcClientTransport<UdsClientError> for UnixDomainSocketJsonRpcClientTra
         request: JsonRpcRequest,
     ) -> Result<JsonRpcResponse, UdsClientError> {
         let serialized_request =
-            serde_json::to_vec(&request).map_err(|_| UdsClientError::ProtocolError)?;
+            serde_json::to_vec(&request).expect("Failed to serialize JSON-RPC request.");
         let serialize_response = self.send_and_receive_bytes(serialized_request).await?;
         Ok(
             serde_json::from_slice::<JsonRpcResponse>(&serialize_response)
-                .map_err(|_| UdsClientError::ProtocolError)?,
+                .map_err(|_| UdsClientError::MalformedResponse)?,
         )
     }
 
@@ -195,40 +195,40 @@ impl JsonRpcClientTransport<UdsClientError> for UnixDomainSocketJsonRpcClientTra
         requests: Vec<JsonRpcRequest>,
     ) -> Result<Vec<JsonRpcResponse>, UdsClientError> {
         let serialized_requests =
-            serde_json::to_vec(&requests).map_err(|_| UdsClientError::ProtocolError)?;
+            serde_json::to_vec(&requests).expect("Failed to serialize JSON-RPC batch request.");
         let serialize_responses = self.send_and_receive_bytes(serialized_requests).await?;
         Ok(
             serde_json::from_slice::<Vec<JsonRpcResponse>>(&serialize_responses)
-                .map_err(|_| UdsClientError::ProtocolError)?,
+                .map_err(|_| UdsClientError::MalformedResponse)?,
         )
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub enum UdsClientError {
-    /// The NIP-70 Unix domain socket server is not running.
+    /// A Unix domain socket server is not running on the specified address.
     ServerNotRunning,
 
     /// An I/O error occurred while writing to or reading from the Unix domain socket.
     UdsSocketError,
 
-    /// A NIP-70 protocol-level error occurred while encoding or decoding messages.
-    ProtocolError,
+    /// Received a response from the server that does not conform to the JSON-RPC 2.0 protocol.
+    MalformedResponse,
 }
 
 impl std::fmt::Display for UdsClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UdsClientError::ServerNotRunning => {
-                write!(f, "NIP-70 Unix domain socket server not running.")
+                write!(f, "Unix domain socket server not running.")
             }
             UdsClientError::UdsSocketError => {
                 write!(f, "Error writing to or reading from Unix domain socket.")
             }
-            UdsClientError::ProtocolError => {
+            UdsClientError::MalformedResponse => {
                 write!(
                     f,
-                    "Error encoding or decoding messages according to the NIP-70 protocol."
+                    "Received a response from the server that does not conform to the JSON-RPC 2.0 protocol."
                 )
             }
         }
