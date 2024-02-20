@@ -3,8 +3,9 @@ use json_rpc::uds::{
     UdsClientError, UnixDomainSocketJsonRpcClientTransport, UnixDomainSocketJsonRpcServerTransport,
 };
 use json_rpc::{
-    JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse,
-    JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
+    JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
+    JsonRpcResponse, JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler,
+    JsonRpcStructuredValue,
 };
 use lightning_invoice::Bolt11Invoice;
 use nostr_sdk::secp256k1::XOnlyPublicKey;
@@ -18,7 +19,6 @@ use std::sync::Arc;
 mod json_rpc;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
-const BUFFER_SIZE: usize = 1024;
 
 const METHOD_NAME_GET_PUBLIC_KEY: &str = "getPublicKey";
 const METHOD_NAME_SIGN_EVENT: &str = "signEvent";
@@ -104,7 +104,6 @@ fn run_nip70_server_internal(
     Ok(JsonRpcServer::new(
         Box::from(UnixDomainSocketJsonRpcServerTransport::connect_and_start(
             uds_address,
-            BUFFER_SIZE,
         )?),
         Box::from(Nip70ServerHandler { nip70 }),
     ))
@@ -125,7 +124,7 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
                 Err(error) => {
                     responses.push(JsonRpcResponse::new(
                         JsonRpcResponseData::Error { error },
-                        request.id(),
+                        request.id().clone(),
                     ));
                     continue;
                 }
@@ -155,7 +154,7 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
                 },
             };
 
-            responses.push(response.to_json_rpc_response(request.id()));
+            responses.push(response.to_json_rpc_response(request.id().clone()));
         }
 
         responses
@@ -177,7 +176,7 @@ pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70ClientError> {
 
 async fn get_public_key_internal(uds_address: String) -> Result<XOnlyPublicKey, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request = Nip70Request::GetPublicKey.to_json_rpc_request(1234);
+    let json_rpc_request = Nip70Request::GetPublicKey.to_json_rpc_request(JsonRpcId::Number(1234));
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -202,7 +201,8 @@ async fn sign_event_internal(
     uds_address: String,
 ) -> Result<Event, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request = Nip70Request::SignEvent(event).to_json_rpc_request(1234);
+    let json_rpc_request =
+        Nip70Request::SignEvent(event).to_json_rpc_request(JsonRpcId::Number(1234));
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -228,7 +228,8 @@ async fn pay_invoice_internal(
     uds_address: String,
 ) -> Result<PayInvoiceResponse, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request = Nip70Request::PayInvoice(request).to_json_rpc_request(1234);
+    let json_rpc_request =
+        Nip70Request::PayInvoice(request).to_json_rpc_request(JsonRpcId::Number(1234));
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -253,7 +254,7 @@ async fn get_relays_internal(
     uds_address: String,
 ) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request = Nip70Request::GetRelays.to_json_rpc_request(1234);
+    let json_rpc_request = Nip70Request::GetRelays.to_json_rpc_request(JsonRpcId::Number(1234));
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -276,7 +277,7 @@ enum Nip70Request {
 }
 
 impl Nip70Request {
-    fn to_json_rpc_request(&self, request_id: i32) -> JsonRpcRequest {
+    fn to_json_rpc_request(&self, request_id: JsonRpcId) -> JsonRpcRequest {
         match self {
             Nip70Request::GetPublicKey => {
                 JsonRpcRequest::new(METHOD_NAME_GET_PUBLIC_KEY.to_string(), None, request_id)
@@ -378,7 +379,7 @@ enum Nip70Response {
 }
 
 impl Nip70Response {
-    fn to_json_rpc_response(&self, request_id: i32) -> JsonRpcResponse {
+    fn to_json_rpc_response(&self, request_id: JsonRpcId) -> JsonRpcResponse {
         match self {
             Nip70Response::PublicKey(response) => JsonRpcResponse::new(
                 JsonRpcResponseData::Success {
@@ -711,7 +712,7 @@ mod tests {
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
-        let content: String = std::iter::repeat('a').take(BUFFER_SIZE * 1000).collect();
+        let content: String = std::iter::repeat('a').take((2 as usize).pow(25)).collect();
         let unsigned_event = UnsignedEvent {
             id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
             pubkey,
@@ -726,6 +727,14 @@ mod tests {
             .unwrap();
 
         assert!(event.verify().is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "must be called from the context of a Tokio 1.x runtime")]
+    fn run_server_without_async_runtime() {
+        let uds_address = get_free_uds_address();
+        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
+        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
     }
 
     #[tokio::test]

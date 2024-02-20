@@ -1,13 +1,14 @@
 use crate::json_rpc::JsonRpcServerTransport;
-use crate::{JsonRpcRequest, JsonRpcResponse};
+use crate::{
+    JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
+    JsonRpcResponse, JsonRpcResponseData,
+};
 use futures::SinkExt;
 use std::path::Path;
 use std::pin::Pin;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
-
-use super::{JsonRpcClientTransport, JsonRpcErrorCode};
 
 pub struct UnixDomainSocketJsonRpcServerTransport {
     uds_task_handle: tokio::task::JoinHandle<()>,
@@ -29,7 +30,9 @@ impl std::ops::Drop for UnixDomainSocketJsonRpcServerTransport {
 }
 
 impl UnixDomainSocketJsonRpcServerTransport {
-    pub fn connect_and_start(uds_address: String, buffer_size: usize) -> std::io::Result<Self> {
+    /// Create a new `UnixDomainSocketJsonRpcServerTransport` and start listening for incoming
+    /// connections. **MUST** be called from within a tokio runtime.
+    pub fn connect_and_start(uds_address: String) -> std::io::Result<Self> {
         if Path::new(&uds_address).exists() {
             std::fs::remove_file(&uds_address)?;
         }
@@ -45,33 +48,37 @@ impl UnixDomainSocketJsonRpcServerTransport {
                 if let Ok((mut socket, _)) = listener.accept().await {
                     // TODO: Grab the task handle and cancel it when the server is dropped.
                     let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-                        let mut buf = vec![0; buffer_size];
-                        let mut rolling_buf: Vec<u8> = Vec::new();
-                        let request: JsonRpcRequest;
-
-                        // TODO: Add a timeout to this read operation.
-                        loop {
-                            socket.readable().await?;
-                            if let Ok(nbytes) = socket.try_read(&mut buf) {
-                                for byte in &buf[..nbytes] {
-                                    rolling_buf.push(*byte);
-                                }
-                            } else if let Ok(parsed_request) =
-                                serde_json::from_slice::<JsonRpcRequest>(&rolling_buf)
-                            {
-                                request = parsed_request;
-                                break;
+                        let mut buf: Vec<u8> = Vec::new();
+                        socket.read_to_end(&mut buf).await?;
+                        let request = match serde_json::from_slice::<JsonRpcRequest>(&buf) {
+                            Ok(request) => request,
+                            Err(_) => {
+                                return Ok(Self::send_response_to_socket(
+                                    socket,
+                                    JsonRpcResponse::new(
+                                        JsonRpcResponseData::Error {
+                                            error: JsonRpcError {
+                                                code: JsonRpcErrorCode::ParseError,
+                                                message: "Failed to parse JSON-RPC request."
+                                                    .to_string(),
+                                                data: None,
+                                            },
+                                        },
+                                        JsonRpcId::Null,
+                                    ),
+                                )
+                                .await?);
                             }
-                        }
+                        };
 
                         let (tx, rx) = futures::channel::oneshot::channel();
-                        let request_id = request.id();
+                        let request_id = request.id().clone();
                         rpc_sender_clone.send((request, tx)).await.unwrap();
                         let response = match rx.await {
                             Ok(response) => response,
                             Err(_) => JsonRpcResponse::new(
-                                super::JsonRpcResponseData::Error {
-                                    error: super::JsonRpcError {
+                                JsonRpcResponseData::Error {
+                                    error: JsonRpcError {
                                         code: JsonRpcErrorCode::InternalError,
                                         message: "Internal error: Response sender dropped"
                                             .to_string(),
@@ -81,13 +88,8 @@ impl UnixDomainSocketJsonRpcServerTransport {
                                 request_id,
                             ),
                         };
-                        let serialized_response = serde_json::to_vec(&response)?;
 
-                        socket.writable().await?;
-                        socket.write_all(&serialized_response).await?;
-                        socket.shutdown().await?;
-
-                        Ok(())
+                        Ok(Self::send_response_to_socket(socket, response).await?)
                     });
                 }
             }
@@ -98,6 +100,20 @@ impl UnixDomainSocketJsonRpcServerTransport {
             rpc_receiver,
             uds_address,
         })
+    }
+
+    /// Send a JSON-RPC response to the client that sent the request.
+    /// Intentionally consumes the `UnixStream` to prevent the caller
+    /// from sending multiple responses to the same request.
+    async fn send_response_to_socket(
+        mut socket: UnixStream,
+        response: JsonRpcResponse,
+    ) -> Result<(), std::io::Error> {
+        let serialized_response = serde_json::to_vec(&response)?;
+        socket.writable().await?;
+        socket.write_all(&serialized_response).await?;
+        socket.shutdown().await?;
+        Ok(())
     }
 
     fn project(
@@ -146,18 +162,12 @@ impl UnixDomainSocketJsonRpcClientTransport {
             .await
             .map_err(|_| UdsClientError::ServerNotRunning)?;
 
-        let mut bytes_written = 0;
-        while bytes_written < serialized_request.len() {
-            socket
-                .writable()
-                .await
-                .map_err(|_| UdsClientError::UdsSocketError)?;
-            bytes_written += socket
-                .try_write(&serialized_request[bytes_written..])
-                .unwrap_or(0);
-        }
         socket
-            .flush()
+            .write_all(&serialized_request)
+            .await
+            .map_err(|_| UdsClientError::UdsSocketError)?;
+        socket
+            .shutdown()
             .await
             .map_err(|_| UdsClientError::UdsSocketError)?;
 

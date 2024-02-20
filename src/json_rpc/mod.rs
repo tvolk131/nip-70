@@ -1,7 +1,7 @@
 pub mod uds;
 
 use futures::StreamExt;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub trait JsonRpcServerTransport:
     futures::Stream<
@@ -16,6 +16,7 @@ pub trait JsonRpcServerTransport:
 #[async_trait::async_trait]
 pub trait JsonRpcServerHandler {
     async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
+        let request_id = request.id().clone();
         let mut responses = self.handle_batch_request(vec![request]).await;
 
         if responses.len() != 1 {
@@ -30,7 +31,7 @@ pub trait JsonRpcServerHandler {
                         data: None,
                     },
                 },
-                0,
+                request_id,
             );
         }
 
@@ -83,13 +84,56 @@ pub struct JsonRpcRequest {
     method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<JsonRpcStructuredValue>,
-    // TODO: According to JSON-RPC 2.0 spec, "id" can be a string,
-    // a number, or null. Let's reflect that in the type here.
-    id: i32,
+    id: JsonRpcId,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum JsonRpcId {
+    Number(i32),
+    String(String),
+    Null,
+}
+
+impl JsonRpcId {
+    fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            JsonRpcId::Number(n) => serde_json::Value::Number((*n).into()),
+            JsonRpcId::String(s) => serde_json::Value::String(s.clone()),
+            JsonRpcId::Null => serde_json::Value::Null,
+        }
+    }
+}
+
+impl serde::Serialize for JsonRpcId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.to_json_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for JsonRpcId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        serde_json::Value::deserialize(deserializer).and_then(|value| {
+            if value.is_i64() {
+                Ok(JsonRpcId::Number(value.as_i64().unwrap() as i32))
+            } else if value.is_string() {
+                Ok(JsonRpcId::String(value.as_str().unwrap().to_string()))
+            } else if value.is_null() {
+                Ok(JsonRpcId::Null)
+            } else {
+                Err(serde::de::Error::custom("Invalid JSON-RPC ID"))
+            }
+        })
+    }
 }
 
 impl JsonRpcRequest {
-    pub fn new(method: String, params: Option<JsonRpcStructuredValue>, id: i32) -> Self {
+    pub fn new(method: String, params: Option<JsonRpcStructuredValue>, id: JsonRpcId) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             method,
@@ -106,8 +150,8 @@ impl JsonRpcRequest {
         self.params.as_ref()
     }
 
-    pub fn id(&self) -> i32 {
-        self.id
+    pub fn id(&self) -> &JsonRpcId {
+        &self.id
     }
 }
 
@@ -132,11 +176,11 @@ pub struct JsonRpcResponse {
     jsonrpc: String,
     #[serde(flatten)]
     data: JsonRpcResponseData,
-    id: i32,
+    id: JsonRpcId,
 }
 
 impl JsonRpcResponse {
-    pub fn new(data: JsonRpcResponseData, id: i32) -> Self {
+    pub fn new(data: JsonRpcResponseData, id: JsonRpcId) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             data,
@@ -148,8 +192,8 @@ impl JsonRpcResponse {
         &self.data
     }
 
-    pub fn id(&self) -> i32 {
-        self.id
+    pub fn id(&self) -> &JsonRpcId {
+        &self.id
     }
 }
 
@@ -219,12 +263,12 @@ mod tests {
 
     #[test]
     fn serialize_and_deserialize_json_rpc_request_with_empty_params() {
-        let request = JsonRpcRequest::new("get_public_key".to_string(), None, 1);
+        let request = JsonRpcRequest::new("get_public_key".to_string(), None, JsonRpcId::Null);
         let request_json_string = serde_json::to_string(&request).unwrap();
 
         assert_eq!(
             request_json_string,
-            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"id\":1}"
+            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"id\":null}"
         );
 
         let parsed_request: JsonRpcRequest = serde_json::from_str(&request_json_string).unwrap();
@@ -239,13 +283,13 @@ mod tests {
             Some(JsonRpcStructuredValue::Object(
                 serde_json::from_str("{\"key_type\":\"rsa\"}").unwrap(),
             )),
-            1,
+            JsonRpcId::Null,
         );
         let request_json_string = serde_json::to_string(&request).unwrap();
 
         assert_eq!(
             request_json_string,
-            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"params\":{\"key_type\":\"rsa\"},\"id\":1}"
+            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"params\":{\"key_type\":\"rsa\"},\"id\":null}"
         );
 
         let parsed_request: JsonRpcRequest = serde_json::from_str(&request_json_string).unwrap();
@@ -262,13 +306,13 @@ mod tests {
                 serde_json::from_str("2").unwrap(),
                 serde_json::from_str("3").unwrap(),
             ])),
-            1,
+            JsonRpcId::Null,
         );
         let request_json_string = serde_json::to_string(&request).unwrap();
 
         assert_eq!(
             request_json_string,
-            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"params\":[1,2,3],\"id\":1}"
+            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"params\":[1,2,3],\"id\":null}"
         );
 
         let parsed_request: JsonRpcRequest = serde_json::from_str(&request_json_string).unwrap();
@@ -282,13 +326,13 @@ mod tests {
             JsonRpcResponseData::Success {
                 result: serde_json::from_str("\"foo\"").unwrap(),
             },
-            1,
+            JsonRpcId::Null,
         );
         let response_json_string = serde_json::to_string(&response).unwrap();
 
         assert_eq!(
             response_json_string,
-            "{\"jsonrpc\":\"2.0\",\"result\":\"foo\",\"id\":1}"
+            "{\"jsonrpc\":\"2.0\",\"result\":\"foo\",\"id\":null}"
         );
 
         let parsed_response: JsonRpcResponse = serde_json::from_str(&response_json_string).unwrap();
@@ -306,13 +350,13 @@ mod tests {
                     data: None,
                 },
             },
-            1,
+            JsonRpcId::Null,
         );
         let response_json_string = serde_json::to_string(&response).unwrap();
 
         assert_eq!(
             response_json_string,
-            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\"},\"id\":1}"
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\"},\"id\":null}"
         );
 
         let parsed_response: JsonRpcResponse = serde_json::from_str(&response_json_string).unwrap();
@@ -330,17 +374,53 @@ mod tests {
                     data: Some(serde_json::from_str("\"bar\"").unwrap()),
                 },
             },
-            1,
+            JsonRpcId::Null,
         );
         let response_json_string = serde_json::to_string(&response).unwrap();
 
         assert_eq!(
             response_json_string,
-            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\",\"data\":\"bar\"},\"id\":1}"
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\",\"data\":\"bar\"},\"id\":null}"
         );
 
         let parsed_response: JsonRpcResponse = serde_json::from_str(&response_json_string).unwrap();
 
         assert_eq!(parsed_response, response);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_integer_id() {
+        let id = JsonRpcId::Number(1234);
+        let id_json_string = serde_json::to_string(&id).unwrap();
+
+        assert_eq!(id_json_string, "1234");
+
+        let parsed_id: JsonRpcId = serde_json::from_str(&id_json_string).unwrap();
+
+        assert_eq!(parsed_id, id);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_string_id() {
+        let id = JsonRpcId::String("foo".to_string());
+        let id_json_string = serde_json::to_string(&id).unwrap();
+
+        assert_eq!(id_json_string, "\"foo\"");
+
+        let parsed_id: JsonRpcId = serde_json::from_str(&id_json_string).unwrap();
+
+        assert_eq!(parsed_id, id);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_null_id() {
+        let id = JsonRpcId::Null;
+        let id_json_string = serde_json::to_string(&id).unwrap();
+
+        assert_eq!(id_json_string, "null");
+
+        let parsed_id: JsonRpcId = serde_json::from_str(&id_json_string).unwrap();
+
+        assert_eq!(parsed_id, id);
     }
 }
