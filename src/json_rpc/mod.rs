@@ -217,8 +217,8 @@ impl<'de> Deserialize<'de> for JsonRpcErrorCode {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn serialize_and_deserialize_json_rpc_request_with_empty_params() {
+    #[test]
+    fn serialize_and_deserialize_json_rpc_request_with_empty_params() {
         let request = JsonRpcRequest::new("get_public_key".to_string(), None, 1);
         let request_json_string = serde_json::to_string(&request).unwrap();
 
@@ -232,8 +232,8 @@ mod tests {
         assert_eq!(parsed_request, request);
     }
 
-    #[tokio::test]
-    async fn serialize_and_deserialize_json_rpc_request_with_object_params() {
+    #[test]
+    fn serialize_and_deserialize_json_rpc_request_with_object_params() {
         let request = JsonRpcRequest::new(
             "get_public_key".to_string(),
             Some(JsonRpcStructuredValue::Object(
@@ -253,8 +253,8 @@ mod tests {
         assert_eq!(parsed_request, request);
     }
 
-    #[tokio::test]
-    async fn serialize_and_deserialize_json_rpc_request_with_array_params() {
+    #[test]
+    fn serialize_and_deserialize_json_rpc_request_with_array_params() {
         let request = JsonRpcRequest::new(
             "get_public_key".to_string(),
             Some(JsonRpcStructuredValue::Array(vec![
@@ -276,8 +276,8 @@ mod tests {
         assert_eq!(parsed_request, request);
     }
 
-    #[tokio::test]
-    async fn serialize_and_deserialize_json_rpc_response_with_result() {
+    #[test]
+    fn serialize_and_deserialize_json_rpc_response_with_result() {
         let response = JsonRpcResponse::new(
             JsonRpcResponseData::Success {
                 result: serde_json::from_str("\"foo\"").unwrap(),
@@ -296,8 +296,8 @@ mod tests {
         assert_eq!(parsed_response, response);
     }
 
-    #[tokio::test]
-    async fn serialize_and_deserialize_json_rpc_response_with_error_no_data() {
+    #[test]
+    fn serialize_and_deserialize_json_rpc_response_with_error_no_data() {
         let response = JsonRpcResponse::new(
             JsonRpcResponseData::Error {
                 error: JsonRpcError {
@@ -320,8 +320,8 @@ mod tests {
         assert_eq!(parsed_response, response);
     }
 
-    #[tokio::test]
-    async fn serialize_and_deserialize_json_rpc_response_with_error_with_data() {
+    #[test]
+    fn serialize_and_deserialize_json_rpc_response_with_error_with_data() {
         let response = JsonRpcResponse::new(
             JsonRpcResponseData::Error {
                 error: JsonRpcError {
