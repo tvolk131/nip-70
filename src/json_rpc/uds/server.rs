@@ -7,7 +7,6 @@ use std::path::Path;
 use std::pin::Pin;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::task::JoinHandle;
 
 pub struct UnixDomainSocketJsonRpcServerTransport {
     uds_task_handle: tokio::task::JoinHandle<()>,
@@ -46,13 +45,13 @@ impl UnixDomainSocketJsonRpcServerTransport {
 
                 if let Ok((mut socket, _)) = listener.accept().await {
                     // TODO: Grab the task handle and cancel it when the server is dropped.
-                    let _: JoinHandle<Result<(), std::io::Error>> = tokio::spawn(async move {
+                    tokio::spawn(async move {
                         let mut buf: Vec<u8> = Vec::new();
                         socket.read_to_end(&mut buf).await?;
                         let request = match serde_json::from_slice::<JsonRpcRequest>(&buf) {
                             Ok(request) => request,
                             Err(_) => {
-                                return Ok(Self::send_response_to_socket(
+                                return Self::send_response_to_socket(
                                     socket,
                                     JsonRpcResponse::new(
                                         JsonRpcResponseData::Error {
@@ -66,7 +65,7 @@ impl UnixDomainSocketJsonRpcServerTransport {
                                         JsonRpcId::Null,
                                     ),
                                 )
-                                .await?);
+                                .await;
                             }
                         };
 
@@ -88,7 +87,7 @@ impl UnixDomainSocketJsonRpcServerTransport {
                             ),
                         };
 
-                        Ok(Self::send_response_to_socket(socket, response).await?)
+                        Self::send_response_to_socket(socket, response).await
                     });
                 }
             }
