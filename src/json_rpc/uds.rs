@@ -47,7 +47,7 @@ impl UnixDomainSocketJsonRpcServerTransport {
 
                 if let Ok((mut socket, _)) = listener.accept().await {
                     // TODO: Grab the task handle and cancel it when the server is dropped.
-                    let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+                    let _: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
                         let mut buf: Vec<u8> = Vec::new();
                         socket.read_to_end(&mut buf).await?;
                         let request = match serde_json::from_slice::<JsonRpcRequest>(&buf) {

@@ -46,13 +46,6 @@ pub struct JsonRpcServer {
     task_handle: tokio::task::JoinHandle<()>,
 }
 
-impl std::ops::Drop for JsonRpcServer {
-    fn drop(&mut self) {
-        // Abort the task, since it will loop forever otherwise.
-        self.task_handle.abort();
-    }
-}
-
 impl JsonRpcServer {
     pub fn new(
         mut transport: Box<dyn JsonRpcServerTransport + Send + Sync>,
@@ -66,6 +59,18 @@ impl JsonRpcServer {
         });
 
         Self { task_handle }
+    }
+
+    pub fn stop(self) {
+        // Drop the server, which will abort the task.
+        drop(self);
+    }
+}
+
+impl std::ops::Drop for JsonRpcServer {
+    fn drop(&mut self) {
+        // Abort the task, since it will loop forever otherwise.
+        self.task_handle.abort();
     }
 }
 

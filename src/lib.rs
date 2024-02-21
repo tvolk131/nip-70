@@ -627,6 +627,8 @@ mod tests {
             nip70.get_public_key().await.unwrap(),
             get_public_key_internal(uds_address).await.unwrap()
         );
+
+        server.stop();
     }
 
     #[tokio::test]
@@ -654,6 +656,8 @@ mod tests {
             .unwrap();
 
         assert!(event.verify().is_ok());
+
+        server.stop();
     }
 
     fn get_test_invoice() -> Bolt11Invoice {
@@ -700,6 +704,8 @@ mod tests {
             pay_invoice_response,
             PayInvoiceResponse::Success(format!("preimage for invoice {invoice}"))
         );
+
+        server.stop();
     }
 
     #[tokio::test]
@@ -727,6 +733,8 @@ mod tests {
             .unwrap();
 
         assert!(event.verify().is_ok());
+
+        server.stop();
     }
 
     #[test]
@@ -734,7 +742,7 @@ mod tests {
     fn run_server_without_async_runtime() {
         let uds_address = get_free_uds_address();
         let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let server = run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
+        run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
     }
 
     #[tokio::test]
@@ -780,6 +788,8 @@ mod tests {
         for handle in client_handles {
             handle.await.unwrap();
         }
+
+        server.stop();
     }
 
     #[tokio::test]
@@ -804,5 +814,7 @@ mod tests {
             public_key_or.unwrap_err(),
             Nip70ClientError::ServerError(Nip70ServerError::Rejected)
         );
+
+        server.stop();
     }
 }
