@@ -264,7 +264,6 @@ impl Nip70Client {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 enum Nip70Request {
     GetPublicKey,
     SignEvent(UnsignedEvent),
@@ -365,7 +364,6 @@ impl Nip70Request {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 enum Nip70Response {
     PublicKey(XOnlyPublicKey),
     Event(Event),
