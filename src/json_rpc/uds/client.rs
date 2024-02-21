@@ -32,10 +32,6 @@ impl UnixDomainSocketJsonRpcClientTransport {
 
         // Read the response from the server.
         // TODO: Add a timeout to this read operation.
-        socket
-            .readable()
-            .await
-            .map_err(|_| UdsClientError::UdsSocketError)?;
         let mut buf = Vec::new();
         socket
             .read_to_end(&mut buf)

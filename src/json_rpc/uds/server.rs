@@ -46,7 +46,7 @@ impl UnixDomainSocketJsonRpcServerTransport {
                 if let Ok((mut socket, _)) = listener.accept().await {
                     // TODO: Grab the task handle and cancel it when the server is dropped.
                     tokio::spawn(async move {
-                        let mut buf: Vec<u8> = Vec::new();
+                        let mut buf = Vec::new();
                         socket.read_to_end(&mut buf).await?;
                         let request = match serde_json::from_slice::<JsonRpcRequest>(&buf) {
                             Ok(request) => request,
@@ -108,7 +108,6 @@ impl UnixDomainSocketJsonRpcServerTransport {
         response: JsonRpcResponse,
     ) -> Result<(), std::io::Error> {
         let serialized_response = serde_json::to_vec(&response)?;
-        socket.writable().await?;
         socket.write_all(&serialized_response).await?;
         socket.shutdown().await?;
         Ok(())
