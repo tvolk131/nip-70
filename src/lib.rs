@@ -1,7 +1,6 @@
 use async_trait::async_trait;
-use json_rpc::uds::{
-    UdsClientError, UnixDomainSocketJsonRpcClientTransport, UnixDomainSocketJsonRpcServerTransport,
-};
+use json_rpc::uds::client::{UdsClientError, UnixDomainSocketJsonRpcClientTransport};
+use json_rpc::uds::server::UnixDomainSocketJsonRpcServerTransport;
 use json_rpc::{
     JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
     JsonRpcResponse, JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler,
