@@ -3,8 +3,7 @@ use json_rpc::uds::client::{UdsClientError, UnixDomainSocketJsonRpcClientTranspo
 use json_rpc::uds::server::UnixDomainSocketJsonRpcServerTransport;
 use json_rpc::{
     JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
-    JsonRpcResponse, JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler,
-    JsonRpcStructuredValue,
+    JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
 };
 use lightning_invoice::Bolt11Invoice;
 use nostr_sdk::secp256k1::XOnlyPublicKey;
@@ -114,17 +113,17 @@ struct Nip70ServerHandler {
 
 #[async_trait::async_trait]
 impl JsonRpcServerHandler for Nip70ServerHandler {
-    async fn handle_batch_request(&self, requests: Vec<JsonRpcRequest>) -> Vec<JsonRpcResponse> {
+    async fn handle_batch_request(
+        &self,
+        requests: Vec<JsonRpcRequest>,
+    ) -> Vec<JsonRpcResponseData> {
         let mut responses = Vec::new();
 
         for request in requests {
             let parsed_request = match Nip70Request::from_json_rpc_request(&request) {
                 Ok(request) => request,
                 Err(error) => {
-                    responses.push(JsonRpcResponse::new(
-                        JsonRpcResponseData::Error { error },
-                        request.id().clone(),
-                    ));
+                    responses.push(JsonRpcResponseData::Error { error });
                     continue;
                 }
             };
@@ -153,7 +152,7 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
                 },
             };
 
-            responses.push(response.to_json_rpc_response(request.id().clone()));
+            responses.push(response.to_json_rpc_response_data());
         }
 
         responses
@@ -253,8 +252,11 @@ impl Nip70Client {
             .send_request(json_rpc_request.clone())
             .await
             .map_err(Nip70ClientError::UdsClientError)?;
-        match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
-            .map_err(|_| Nip70ClientError::ProtocolError)?
+        match Nip70Response::from_json_rpc_response_data(
+            &json_rpc_request,
+            json_rpc_response.data(),
+        )
+        .map_err(|_| Nip70ClientError::ProtocolError)?
         {
             Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
             response => Ok(response),
@@ -373,46 +375,31 @@ enum Nip70Response {
 }
 
 impl Nip70Response {
-    fn to_json_rpc_response(&self, request_id: JsonRpcId) -> JsonRpcResponse {
+    fn to_json_rpc_response_data(&self) -> JsonRpcResponseData {
         match self {
-            Nip70Response::PublicKey(response) => JsonRpcResponse::new(
-                JsonRpcResponseData::Success {
-                    result: serde_json::to_value(response).unwrap(),
-                },
-                request_id,
-            ),
-            Nip70Response::Event(response) => JsonRpcResponse::new(
-                JsonRpcResponseData::Success {
-                    result: serde_json::to_value(response).unwrap(),
-                },
-                request_id,
-            ),
-            Nip70Response::InvoicePaid(response) => JsonRpcResponse::new(
-                JsonRpcResponseData::Success {
-                    result: serde_json::to_value(response).unwrap(),
-                },
-                request_id,
-            ),
-            Nip70Response::Relays(response) => JsonRpcResponse::new(
-                JsonRpcResponseData::Success {
-                    result: serde_json::to_value(response).unwrap(),
-                },
-                request_id,
-            ),
-            Nip70Response::Error(err) => JsonRpcResponse::new(
-                JsonRpcResponseData::Error {
-                    error: err.to_json_rpc_error(),
-                },
-                request_id,
-            ),
+            Nip70Response::PublicKey(response) => JsonRpcResponseData::Success {
+                result: serde_json::to_value(response).unwrap(),
+            },
+            Nip70Response::Event(response) => JsonRpcResponseData::Success {
+                result: serde_json::to_value(response).unwrap(),
+            },
+            Nip70Response::InvoicePaid(response) => JsonRpcResponseData::Success {
+                result: serde_json::to_value(response).unwrap(),
+            },
+            Nip70Response::Relays(response) => JsonRpcResponseData::Success {
+                result: serde_json::to_value(response).unwrap(),
+            },
+            Nip70Response::Error(err) => JsonRpcResponseData::Error {
+                error: err.to_json_rpc_error(),
+            },
         }
     }
 
-    fn from_json_rpc_response(
+    fn from_json_rpc_response_data(
         request: &JsonRpcRequest,
-        response: &JsonRpcResponse,
+        response: &JsonRpcResponseData,
     ) -> Result<Self, JsonRpcError> {
-        let result = match response.data() {
+        let result = match response {
             JsonRpcResponseData::Success { result } => result,
             JsonRpcResponseData::Error { error } => {
                 return match Nip70ServerError::from_json_rpc_error(error) {

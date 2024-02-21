@@ -1,4 +1,4 @@
-use crate::{JsonRpcClientTransport, JsonRpcRequest, JsonRpcResponse};
+use super::super::{JsonRpcClientTransport, JsonRpcRequest, JsonRpcResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 

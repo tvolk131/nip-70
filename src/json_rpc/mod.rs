@@ -18,31 +18,28 @@ pub trait JsonRpcServerTransport:
 
 #[async_trait]
 pub trait JsonRpcServerHandler: Send + Sync {
-    async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
-        let request_id = request.id().clone();
+    async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponseData {
         let mut responses = self.handle_batch_request(vec![request]).await;
 
         if responses.len() != 1 {
-            return JsonRpcResponse::new(
-                JsonRpcResponseData::Error {
-                    error: JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: format!(
-                            "Internal error: Batch handler returned {} responses instead of 1",
-                            responses.len()
-                        ),
-                        data: None,
-                    },
+            return JsonRpcResponseData::Error {
+                error: JsonRpcError {
+                    code: JsonRpcErrorCode::InternalError,
+                    message: format!(
+                        "Internal error: Batch handler returned {} responses instead of 1",
+                        responses.len()
+                    ),
+                    data: None,
                 },
-                request_id,
-            );
+            };
         }
 
         // Unwrap is safe because we just checked that the length is 1.
         responses.pop().unwrap()
     }
 
-    async fn handle_batch_request(&self, requests: Vec<JsonRpcRequest>) -> Vec<JsonRpcResponse>;
+    async fn handle_batch_request(&self, requests: Vec<JsonRpcRequest>)
+        -> Vec<JsonRpcResponseData>;
 }
 
 pub struct JsonRpcServer {
@@ -56,7 +53,9 @@ impl JsonRpcServer {
     ) -> Self {
         let task_handle = tokio::spawn(async move {
             while let Some((request, response_sender)) = transport.next().await {
-                let response = handler.handle_request(request).await;
+                let request_id = request.id().clone();
+                let response =
+                    JsonRpcResponse::new(handler.handle_request(request).await, request_id);
                 response_sender.send(response).unwrap();
             }
         });
@@ -198,10 +197,6 @@ impl JsonRpcResponse {
 
     pub fn data(&self) -> &JsonRpcResponseData {
         &self.data
-    }
-
-    pub fn id(&self) -> &JsonRpcId {
-        &self.id
     }
 }
 
