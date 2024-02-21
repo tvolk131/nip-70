@@ -194,10 +194,8 @@ impl JsonRpcClientTransport<UdsClientError> for UnixDomainSocketJsonRpcClientTra
         let serialized_request =
             serde_json::to_vec(&request).expect("Failed to serialize JSON-RPC request.");
         let serialize_response = self.send_and_receive_bytes(serialized_request).await?;
-        Ok(
-            serde_json::from_slice::<JsonRpcResponse>(&serialize_response)
-                .map_err(|_| UdsClientError::MalformedResponse)?,
-        )
+        serde_json::from_slice::<JsonRpcResponse>(&serialize_response)
+            .map_err(|_| UdsClientError::MalformedResponse)
     }
 
     async fn send_batch_request(
@@ -207,10 +205,8 @@ impl JsonRpcClientTransport<UdsClientError> for UnixDomainSocketJsonRpcClientTra
         let serialized_requests =
             serde_json::to_vec(&requests).expect("Failed to serialize JSON-RPC batch request.");
         let serialize_responses = self.send_and_receive_bytes(serialized_requests).await?;
-        Ok(
-            serde_json::from_slice::<Vec<JsonRpcResponse>>(&serialize_responses)
-                .map_err(|_| UdsClientError::MalformedResponse)?,
-        )
+        serde_json::from_slice::<Vec<JsonRpcResponse>>(&serialize_responses)
+            .map_err(|_| UdsClientError::MalformedResponse)
     }
 }
 

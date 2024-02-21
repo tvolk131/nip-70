@@ -180,7 +180,7 @@ async fn get_public_key_internal(uds_address: String) -> Result<XOnlyPublicKey, 
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
-        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+        .map_err(Nip70ClientError::UdsClientError)?;
     match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
         .map_err(|_| Nip70ClientError::ProtocolError)?
     {
@@ -206,7 +206,7 @@ async fn sign_event_internal(
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
-        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+        .map_err(Nip70ClientError::UdsClientError)?;
     match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
         .map_err(|_| Nip70ClientError::ProtocolError)?
     {
@@ -233,7 +233,7 @@ async fn pay_invoice_internal(
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
-        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+        .map_err(Nip70ClientError::UdsClientError)?;
     match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
         .map_err(|_| Nip70ClientError::ProtocolError)?
     {
@@ -258,7 +258,7 @@ async fn get_relays_internal(
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
-        .map_err(|err| Nip70ClientError::UdsClientError(err))?;
+        .map_err(Nip70ClientError::UdsClientError)?;
     match Nip70Response::from_json_rpc_response(&json_rpc_request, &json_rpc_response)
         .map_err(|_| Nip70ClientError::ProtocolError)?
     {
@@ -316,8 +316,8 @@ impl Nip70Request {
         match request.method() {
             METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Request::GetPublicKey),
             METHOD_NAME_SIGN_EVENT => Ok(Nip70Request::SignEvent(
-                if let Ok(value) = serde_json::from_value(
-                    match request.params().clone().map(|v| v.clone().to_value()) {
+                if let Ok(value) =
+                    serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
                         Some(value) => value,
                         None => {
                             return Err(JsonRpcError {
@@ -326,8 +326,8 @@ impl Nip70Request {
                                 data: None,
                             })
                         }
-                    },
-                ) {
+                    })
+                {
                     value
                 } else {
                     return Err(JsonRpcError {
@@ -338,8 +338,8 @@ impl Nip70Request {
                 },
             )),
             METHOD_NAME_PAY_INVOICE => Ok(Nip70Request::PayInvoice(
-                if let Ok(value) = serde_json::from_value(
-                    match request.params().clone().map(|v| v.clone().to_value()) {
+                if let Ok(value) =
+                    serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
                         Some(value) => value,
                         None => {
                             return Err(JsonRpcError {
@@ -348,8 +348,8 @@ impl Nip70Request {
                                 data: None,
                             })
                         }
-                    },
-                ) {
+                    })
+                {
                     value
                 } else {
                     return Err(JsonRpcError {

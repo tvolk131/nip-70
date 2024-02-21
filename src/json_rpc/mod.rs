@@ -163,7 +163,7 @@ pub enum JsonRpcStructuredValue {
 }
 
 impl JsonRpcStructuredValue {
-    pub fn to_value(self) -> serde_json::Value {
+    pub fn into_value(self) -> serde_json::Value {
         match self {
             JsonRpcStructuredValue::Object(object) => serde_json::Value::Object(object),
             JsonRpcStructuredValue::Array(array) => serde_json::Value::Array(array),
