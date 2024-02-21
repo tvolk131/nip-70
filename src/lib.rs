@@ -175,7 +175,7 @@ pub async fn get_public_key() -> Result<XOnlyPublicKey, Nip70ClientError> {
 
 async fn get_public_key_internal(uds_address: String) -> Result<XOnlyPublicKey, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request = Nip70Request::GetPublicKey.to_json_rpc_request(JsonRpcId::Number(1234));
+    let json_rpc_request = Nip70Request::GetPublicKey.to_json_rpc_request(JsonRpcId::Null);
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -200,8 +200,7 @@ async fn sign_event_internal(
     uds_address: String,
 ) -> Result<Event, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request =
-        Nip70Request::SignEvent(event).to_json_rpc_request(JsonRpcId::Number(1234));
+    let json_rpc_request = Nip70Request::SignEvent(event).to_json_rpc_request(JsonRpcId::Null);
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -227,8 +226,7 @@ async fn pay_invoice_internal(
     uds_address: String,
 ) -> Result<PayInvoiceResponse, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request =
-        Nip70Request::PayInvoice(request).to_json_rpc_request(JsonRpcId::Number(1234));
+    let json_rpc_request = Nip70Request::PayInvoice(request).to_json_rpc_request(JsonRpcId::Null);
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
@@ -253,7 +251,7 @@ async fn get_relays_internal(
     uds_address: String,
 ) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
     // TODO: Get a real request id.
-    let json_rpc_request = Nip70Request::GetRelays.to_json_rpc_request(JsonRpcId::Number(1234));
+    let json_rpc_request = Nip70Request::GetRelays.to_json_rpc_request(JsonRpcId::Null);
     let json_rpc_response = UnixDomainSocketJsonRpcClientTransport::new(uds_address)
         .send_request(json_rpc_request.clone())
         .await
