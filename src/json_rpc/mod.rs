@@ -266,166 +266,139 @@ impl<'de> Deserialize<'de> for JsonRpcErrorCode {
 mod tests {
     use super::*;
 
-    #[test]
-    fn serialize_and_deserialize_json_rpc_request_with_empty_params() {
-        let request = JsonRpcRequest::new("get_public_key".to_string(), None, JsonRpcId::Null);
-        let request_json_string = serde_json::to_string(&request).unwrap();
-
-        assert_eq!(
-            request_json_string,
-            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"id\":null}"
-        );
-
-        let parsed_request: JsonRpcRequest = serde_json::from_str(&request_json_string).unwrap();
-
-        assert_eq!(parsed_request, request);
+    fn assert_json_serialization<
+        'a,
+        T: Serialize + Deserialize<'a> + PartialEq + std::fmt::Debug,
+    >(
+        value: T,
+        json_string: &'a str,
+    ) {
+        assert_eq!(serde_json::from_str::<T>(json_string).unwrap(), value);
+        assert_eq!(serde_json::to_string(&value).unwrap(), json_string);
     }
 
     #[test]
-    fn serialize_and_deserialize_json_rpc_request_with_object_params() {
-        let request = JsonRpcRequest::new(
-            "get_public_key".to_string(),
-            Some(JsonRpcStructuredValue::Object(
-                serde_json::from_str("{\"key_type\":\"rsa\"}").unwrap(),
-            )),
-            JsonRpcId::Null,
+    fn serialize_and_deserialize_json_rpc_request() {
+        // Test with no parameters and null ID.
+        assert_json_serialization(
+            JsonRpcRequest::new("get_public_key".to_string(), None, JsonRpcId::Null),
+            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"id\":null}",
         );
-        let request_json_string = serde_json::to_string(&request).unwrap();
 
-        assert_eq!(
-            request_json_string,
+        // Test with object parameters.
+        assert_json_serialization(
+            JsonRpcRequest::new(
+                "get_public_key".to_string(),
+                Some(JsonRpcStructuredValue::Object(serde_json::from_str("{\"key_type\":\"rsa\"}").unwrap())),
+                JsonRpcId::Null),
             "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"params\":{\"key_type\":\"rsa\"},\"id\":null}"
         );
 
-        let parsed_request: JsonRpcRequest = serde_json::from_str(&request_json_string).unwrap();
+        // Test with array parameters.
+        assert_json_serialization(
+            JsonRpcRequest::new(
+                "fetch_values".to_string(),
+                Some(JsonRpcStructuredValue::Array(vec![
+                    serde_json::from_str("1").unwrap(),
+                    serde_json::from_str("\"2\"").unwrap(),
+                    serde_json::from_str("{\"3\":true}").unwrap(),
+                ])),
+                JsonRpcId::Null,
+            ),
+            "{\"jsonrpc\":\"2.0\",\"method\":\"fetch_values\",\"params\":[1,\"2\",{\"3\":true}],\"id\":null}",
+        );
 
-        assert_eq!(parsed_request, request);
+        // Test with number ID.
+        assert_json_serialization(
+            JsonRpcRequest::new("get_public_key".to_string(), None, JsonRpcId::Number(1234)),
+            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"id\":1234}",
+        );
+
+        // Test with number ID.
+        assert_json_serialization(
+            JsonRpcRequest::new(
+                "get_foo_string".to_string(),
+                None,
+                JsonRpcId::String("foo".to_string()),
+            ),
+            "{\"jsonrpc\":\"2.0\",\"method\":\"get_foo_string\",\"id\":\"foo\"}",
+        );
     }
 
     #[test]
-    fn serialize_and_deserialize_json_rpc_request_with_array_params() {
-        let request = JsonRpcRequest::new(
-            "get_public_key".to_string(),
-            Some(JsonRpcStructuredValue::Array(vec![
-                serde_json::from_str("1").unwrap(),
-                serde_json::from_str("2").unwrap(),
-                serde_json::from_str("3").unwrap(),
-            ])),
-            JsonRpcId::Null,
-        );
-        let request_json_string = serde_json::to_string(&request).unwrap();
-
-        assert_eq!(
-            request_json_string,
-            "{\"jsonrpc\":\"2.0\",\"method\":\"get_public_key\",\"params\":[1,2,3],\"id\":null}"
-        );
-
-        let parsed_request: JsonRpcRequest = serde_json::from_str(&request_json_string).unwrap();
-
-        assert_eq!(parsed_request, request);
-    }
-
-    #[test]
-    fn serialize_and_deserialize_json_rpc_response_with_result() {
-        let response = JsonRpcResponse::new(
-            JsonRpcResponseData::Success {
-                result: serde_json::from_str("\"foo\"").unwrap(),
-            },
-            JsonRpcId::Null,
-        );
-        let response_json_string = serde_json::to_string(&response).unwrap();
-
-        assert_eq!(
-            response_json_string,
-            "{\"jsonrpc\":\"2.0\",\"result\":\"foo\",\"id\":null}"
-        );
-
-        let parsed_response: JsonRpcResponse = serde_json::from_str(&response_json_string).unwrap();
-
-        assert_eq!(parsed_response, response);
-    }
-
-    #[test]
-    fn serialize_and_deserialize_json_rpc_response_with_error_no_data() {
-        let response = JsonRpcResponse::new(
-            JsonRpcResponseData::Error {
-                error: JsonRpcError {
-                    code: JsonRpcErrorCode::InternalError,
-                    message: "foo".to_string(),
-                    data: None,
+    fn serialize_and_deserialize_json_rpc_response() {
+        // Test with result and null ID.
+        assert_json_serialization(
+            JsonRpcResponse::new(
+                JsonRpcResponseData::Success {
+                    result: serde_json::from_str("\"foo\"").unwrap(),
                 },
-            },
-            JsonRpcId::Null,
-        );
-        let response_json_string = serde_json::to_string(&response).unwrap();
-
-        assert_eq!(
-            response_json_string,
-            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\"},\"id\":null}"
+                JsonRpcId::Null,
+            ),
+            "{\"jsonrpc\":\"2.0\",\"result\":\"foo\",\"id\":null}",
         );
 
-        let parsed_response: JsonRpcResponse = serde_json::from_str(&response_json_string).unwrap();
-
-        assert_eq!(parsed_response, response);
-    }
-
-    #[test]
-    fn serialize_and_deserialize_json_rpc_response_with_error_with_data() {
-        let response = JsonRpcResponse::new(
-            JsonRpcResponseData::Error {
-                error: JsonRpcError {
-                    code: JsonRpcErrorCode::InternalError,
-                    message: "foo".to_string(),
-                    data: Some(serde_json::from_str("\"bar\"").unwrap()),
+        // Test with error (no data).
+        assert_json_serialization(
+            JsonRpcResponse::new(
+                JsonRpcResponseData::Error {
+                    error: JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "foo".to_string(),
+                        data: None,
+                    },
                 },
-            },
-            JsonRpcId::Null,
-        );
-        let response_json_string = serde_json::to_string(&response).unwrap();
-
-        assert_eq!(
-            response_json_string,
-            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\",\"data\":\"bar\"},\"id\":null}"
+                JsonRpcId::Null,
+            ),
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\"},\"id\":null}",
         );
 
-        let parsed_response: JsonRpcResponse = serde_json::from_str(&response_json_string).unwrap();
-
-        assert_eq!(parsed_response, response);
+        // Test with error (with data).
+        assert_json_serialization(
+            JsonRpcResponse::new(
+                JsonRpcResponseData::Error {
+                    error: JsonRpcError {
+                        code: JsonRpcErrorCode::InternalError,
+                        message: "foo".to_string(),
+                        data: Some(serde_json::from_str("\"bar\"").unwrap()),
+                    },
+                },
+                JsonRpcId::Null,
+            ),
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"foo\",\"data\":\"bar\"},\"id\":null}",
+        );
     }
 
     #[test]
-    fn serialize_and_deserialize_integer_id() {
-        let id = JsonRpcId::Number(1234);
-        let id_json_string = serde_json::to_string(&id).unwrap();
+    fn serialize_and_deserialize_id() {
+        // Test with number ID.
+        assert_json_serialization(JsonRpcId::Number(1234), "1234");
 
-        assert_eq!(id_json_string, "1234");
+        // Test with string ID.
+        assert_json_serialization(JsonRpcId::String("foo".to_string()), "\"foo\"");
 
-        let parsed_id: JsonRpcId = serde_json::from_str(&id_json_string).unwrap();
-
-        assert_eq!(parsed_id, id);
+        // Test with null ID.
+        assert_json_serialization(JsonRpcId::Null, "null");
     }
 
     #[test]
-    fn serialize_and_deserialize_string_id() {
-        let id = JsonRpcId::String("foo".to_string());
-        let id_json_string = serde_json::to_string(&id).unwrap();
+    fn serialize_and_deserialize_error_code() {
+        // Test with ParseError.
+        assert_json_serialization(JsonRpcErrorCode::ParseError, "-32700");
 
-        assert_eq!(id_json_string, "\"foo\"");
+        // Test with InvalidRequest.
+        assert_json_serialization(JsonRpcErrorCode::InvalidRequest, "-32600");
 
-        let parsed_id: JsonRpcId = serde_json::from_str(&id_json_string).unwrap();
+        // Test with MethodNotFound.
+        assert_json_serialization(JsonRpcErrorCode::MethodNotFound, "-32601");
 
-        assert_eq!(parsed_id, id);
-    }
+        // Test with InvalidParams.
+        assert_json_serialization(JsonRpcErrorCode::InvalidParams, "-32602");
 
-    #[test]
-    fn serialize_and_deserialize_null_id() {
-        let id = JsonRpcId::Null;
-        let id_json_string = serde_json::to_string(&id).unwrap();
+        // Test with InternalError.
+        assert_json_serialization(JsonRpcErrorCode::InternalError, "-32603");
 
-        assert_eq!(id_json_string, "null");
-
-        let parsed_id: JsonRpcId = serde_json::from_str(&id_json_string).unwrap();
-
-        assert_eq!(parsed_id, id);
+        // Test with Custom.
+        assert_json_serialization(JsonRpcErrorCode::Custom(1234), "1234");
     }
 }
