@@ -174,6 +174,12 @@ pub struct Nip70Client {
     transport: UnixDomainSocketJsonRpcClientTransport,
 }
 
+impl Default for Nip70Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Nip70Client {
     pub fn new() -> Self {
         Self::new_internal(NIP70_UDS_ADDRESS.to_string())
@@ -194,7 +200,7 @@ impl Nip70Client {
                 Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
                 _ => Err(Nip70ClientError::ProtocolError),
             })
-            .unwrap_or_else(|err| Err(err))
+            .unwrap_or_else(Err)
     }
 
     /// Signs a Nostr event on behalf of the signed-in user using the NIP-70 server.
@@ -206,7 +212,7 @@ impl Nip70Client {
                 Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
                 _ => Err(Nip70ClientError::ProtocolError),
             })
-            .unwrap_or_else(|err| Err(err))
+            .unwrap_or_else(Err)
     }
 
     /// Pays an invoice using the NIP-70 server.
@@ -221,7 +227,7 @@ impl Nip70Client {
                 Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
                 _ => Err(Nip70ClientError::ProtocolError),
             })
-            .unwrap_or_else(|err| Err(err))
+            .unwrap_or_else(Err)
     }
 
     /// Fetches the list of relays that the NIP-70 server is aware of.
@@ -236,11 +242,11 @@ impl Nip70Client {
                 Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
                 _ => Err(Nip70ClientError::ProtocolError),
             })
-            .unwrap_or_else(|err| Err(err))
+            .unwrap_or_else(Err)
     }
 
     async fn send_request(&self, request: Nip70Request) -> Result<Nip70Response, Nip70ClientError> {
-        // TODO: Get a real request id.
+        // TODO: Use a real request id.
         let json_rpc_request = request.to_json_rpc_request(JsonRpcId::Null);
         let json_rpc_response = self
             .transport
