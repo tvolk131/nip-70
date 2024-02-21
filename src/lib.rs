@@ -37,21 +37,19 @@ pub enum Nip70ServerError {
 impl Nip70ServerError {
     fn to_json_rpc_error(&self) -> JsonRpcError {
         match self {
-            Nip70ServerError::Rejected => JsonRpcError {
-                code: JsonRpcErrorCode::Custom(1),
-                message: "Rejected".to_string(),
-                data: None,
-            },
-            Nip70ServerError::InternalError => JsonRpcError {
-                code: JsonRpcErrorCode::Custom(2),
-                message: "Internal error".to_string(),
-                data: None,
-            },
+            Nip70ServerError::Rejected => {
+                JsonRpcError::new(JsonRpcErrorCode::Custom(1), "Rejected".to_string(), None)
+            }
+            Nip70ServerError::InternalError => JsonRpcError::new(
+                JsonRpcErrorCode::Custom(2),
+                "Internal error".to_string(),
+                None,
+            ),
         }
     }
 
     fn from_json_rpc_error(error: &JsonRpcError) -> Result<Self, JsonRpcError> {
-        match error.code {
+        match error.code() {
             JsonRpcErrorCode::Custom(1) => Ok(Nip70ServerError::Rejected),
             JsonRpcErrorCode::Custom(2) => Ok(Nip70ServerError::InternalError),
             _ => Err(error.clone()),
@@ -315,21 +313,21 @@ impl Nip70Request {
                     serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
                         Some(value) => value,
                         None => {
-                            return Err(JsonRpcError {
-                                code: JsonRpcErrorCode::InternalError,
-                                message: "Internal error".to_string(),
-                                data: None,
-                            })
+                            return Err(JsonRpcError::new(
+                                JsonRpcErrorCode::InternalError,
+                                "Internal error".to_string(),
+                                None,
+                            ))
                         }
                     })
                 {
                     value
                 } else {
-                    return Err(JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: "Internal error".to_string(),
-                        data: None,
-                    });
+                    return Err(JsonRpcError::new(
+                        JsonRpcErrorCode::InternalError,
+                        "Internal error".to_string(),
+                        None,
+                    ));
                 },
             )),
             METHOD_NAME_PAY_INVOICE => Ok(Nip70Request::PayInvoice(
@@ -337,29 +335,29 @@ impl Nip70Request {
                     serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
                         Some(value) => value,
                         None => {
-                            return Err(JsonRpcError {
-                                code: JsonRpcErrorCode::InternalError,
-                                message: "Internal error".to_string(),
-                                data: None,
-                            })
+                            return Err(JsonRpcError::new(
+                                JsonRpcErrorCode::InternalError,
+                                "Internal error".to_string(),
+                                None,
+                            ))
                         }
                     })
                 {
                     value
                 } else {
-                    return Err(JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: "Internal error".to_string(),
-                        data: None,
-                    });
+                    return Err(JsonRpcError::new(
+                        JsonRpcErrorCode::InternalError,
+                        "Internal error".to_string(),
+                        None,
+                    ));
                 },
             )),
             METHOD_NAME_GET_RELAYS => Ok(Nip70Request::GetRelays),
-            _ => Err(JsonRpcError {
-                code: JsonRpcErrorCode::MethodNotFound,
-                message: "Method not found".to_string(),
-                data: None,
-            }),
+            _ => Err(JsonRpcError::new(
+                JsonRpcErrorCode::MethodNotFound,
+                "Method not found".to_string(),
+                None,
+            )),
         }
     }
 }
@@ -412,51 +410,51 @@ impl Nip70Response {
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: "Internal error".to_string(),
-                        data: None,
-                    });
+                    return Err(JsonRpcError::new(
+                        JsonRpcErrorCode::InternalError,
+                        "Internal error".to_string(),
+                        None,
+                    ));
                 },
             )),
             METHOD_NAME_SIGN_EVENT => Ok(Nip70Response::Event(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: "Internal error".to_string(),
-                        data: None,
-                    });
+                    return Err(JsonRpcError::new(
+                        JsonRpcErrorCode::InternalError,
+                        "Internal error".to_string(),
+                        None,
+                    ));
                 },
             )),
             METHOD_NAME_PAY_INVOICE => Ok(Nip70Response::InvoicePaid(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: "Internal error".to_string(),
-                        data: None,
-                    });
+                    return Err(JsonRpcError::new(
+                        JsonRpcErrorCode::InternalError,
+                        "Internal error".to_string(),
+                        None,
+                    ));
                 },
             )),
             METHOD_NAME_GET_RELAYS => Ok(Nip70Response::Relays(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError {
-                        code: JsonRpcErrorCode::InternalError,
-                        message: "Internal error".to_string(),
-                        data: None,
-                    });
+                    return Err(JsonRpcError::new(
+                        JsonRpcErrorCode::InternalError,
+                        "Internal error".to_string(),
+                        None,
+                    ));
                 },
             )),
-            _ => Err(JsonRpcError {
-                code: JsonRpcErrorCode::MethodNotFound,
-                message: "Method not found".to_string(),
-                data: None,
-            }),
+            _ => Err(JsonRpcError::new(
+                JsonRpcErrorCode::MethodNotFound,
+                "Method not found".to_string(),
+                None,
+            )),
         }
     }
 }

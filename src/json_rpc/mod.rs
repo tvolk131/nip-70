@@ -210,13 +210,27 @@ pub enum JsonRpcResponseData {
 // TODO: Make these fields private.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct JsonRpcError {
-    pub code: JsonRpcErrorCode,
-    pub message: String,
+    code: JsonRpcErrorCode,
+    message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
+    data: Option<serde_json::Value>,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+impl JsonRpcError {
+    pub fn new(code: JsonRpcErrorCode, message: String, data: Option<serde_json::Value>) -> Self {
+        Self {
+            code,
+            message,
+            data,
+        }
+    }
+
+    pub fn code(&self) -> JsonRpcErrorCode {
+        self.code
+    }
+}
+
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum JsonRpcErrorCode {
     ParseError,
     InvalidRequest,
