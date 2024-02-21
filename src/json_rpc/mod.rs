@@ -1,5 +1,6 @@
 pub mod uds;
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -15,7 +16,7 @@ pub trait JsonRpcServerTransport:
 {
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 pub trait JsonRpcServerHandler: Send + Sync {
     async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         let request_id = request.id().clone();
