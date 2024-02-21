@@ -10,11 +10,13 @@ pub trait JsonRpcServerTransport:
             futures::channel::oneshot::Sender<JsonRpcResponse>,
         ),
     > + Unpin
+    + Send
+    + Sync
 {
 }
 
 #[async_trait::async_trait]
-pub trait JsonRpcServerHandler {
+pub trait JsonRpcServerHandler: Send + Sync {
     async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         let request_id = request.id().clone();
         let mut responses = self.handle_batch_request(vec![request]).await;
@@ -48,8 +50,8 @@ pub struct JsonRpcServer {
 
 impl JsonRpcServer {
     pub fn new(
-        mut transport: Box<dyn JsonRpcServerTransport + Send + Sync>,
-        handler: Box<dyn JsonRpcServerHandler + Send + Sync>,
+        mut transport: Box<dyn JsonRpcServerTransport>,
+        handler: Box<dyn JsonRpcServerHandler>,
     ) -> Self {
         let task_handle = tokio::spawn(async move {
             while let Some((request, response_sender)) = transport.next().await {
