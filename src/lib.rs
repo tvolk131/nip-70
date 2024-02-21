@@ -61,7 +61,7 @@ impl Nip70ServerError {
 }
 
 // Defines the server-side functionality for the NIP-70 protocol.
-// Implement this trait and pass it to `Nip70Server::new()` to run a NIP-70 server.
+// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
     // -----------------
