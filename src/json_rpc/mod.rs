@@ -86,8 +86,14 @@ pub trait JsonRpcClientTransport<E> {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+enum JsonRpcVersion {
+    #[serde(rename = "2.0")]
+    V2,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct JsonRpcRequest {
-    jsonrpc: String,
+    jsonrpc: JsonRpcVersion,
     method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<JsonRpcStructuredValue>,
@@ -142,7 +148,7 @@ impl<'de> Deserialize<'de> for JsonRpcId {
 impl JsonRpcRequest {
     pub fn new(method: String, params: Option<JsonRpcStructuredValue>, id: JsonRpcId) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JsonRpcVersion::V2,
             method,
             params,
             id,
@@ -180,7 +186,7 @@ impl JsonRpcStructuredValue {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct JsonRpcResponse {
-    jsonrpc: String,
+    jsonrpc: JsonRpcVersion,
     #[serde(flatten)]
     data: JsonRpcResponseData,
     id: JsonRpcId,
@@ -189,7 +195,7 @@ pub struct JsonRpcResponse {
 impl JsonRpcResponse {
     pub fn new(data: JsonRpcResponseData, id: JsonRpcId) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JsonRpcVersion::V2,
             data,
             id,
         }
