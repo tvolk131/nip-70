@@ -2,6 +2,7 @@ use crate::{JsonRpcClientTransport, JsonRpcRequest, JsonRpcResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+#[derive(Clone)]
 pub struct UnixDomainSocketJsonRpcClientTransport {
     uds_address: String,
 }
