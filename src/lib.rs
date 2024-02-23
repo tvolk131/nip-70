@@ -270,39 +270,44 @@ enum Nip70Request {
 }
 
 impl Nip70Request {
-    fn to_json_rpc_request(&self, request_id: JsonRpcId) -> JsonRpcRequest {
+    fn get_method_name(&self) -> &str {
         match self {
-            Nip70Request::GetPublicKey => {
-                JsonRpcRequest::new(METHOD_NAME_GET_PUBLIC_KEY.to_string(), None, request_id)
-            }
-            Nip70Request::SignEvent(event) => JsonRpcRequest::new(
-                METHOD_NAME_SIGN_EVENT.to_string(),
-                Some(JsonRpcStructuredValue::Object(
-                    // This should never panic, since we're converting an `UnsignedEvent`
-                    // struct, which should always serialize to a JSON object.
-                    json!(event)
-                        .as_object()
-                        .expect("Failed to convert event to object")
-                        .clone(),
-                )),
-                request_id,
-            ),
-            Nip70Request::PayInvoice(request) => JsonRpcRequest::new(
-                METHOD_NAME_PAY_INVOICE.to_string(),
-                Some(JsonRpcStructuredValue::Object(
-                    // This should never panic, since we're converting a `PayInvoiceRequest`
-                    // struct, which should always serialize to a JSON object.
-                    json!(request)
-                        .as_object()
-                        .expect("Failed to convert request to object")
-                        .clone(),
-                )),
-                request_id,
-            ),
-            Nip70Request::GetRelays => {
-                JsonRpcRequest::new(METHOD_NAME_GET_RELAYS.to_string(), None, request_id)
-            }
+            Nip70Request::GetPublicKey => METHOD_NAME_GET_PUBLIC_KEY,
+            Nip70Request::SignEvent(_) => METHOD_NAME_SIGN_EVENT,
+            Nip70Request::PayInvoice(_) => METHOD_NAME_PAY_INVOICE,
+            Nip70Request::GetRelays => METHOD_NAME_GET_RELAYS,
         }
+    }
+
+    fn get_params(&self) -> Option<JsonRpcStructuredValue> {
+        match self {
+            Nip70Request::GetPublicKey => None,
+            Nip70Request::SignEvent(event) => Some(JsonRpcStructuredValue::Object(
+                // This should never panic, since we're converting an `UnsignedEvent`
+                // struct, which should always serialize to a JSON object.
+                json!(event)
+                    .as_object()
+                    .expect("Failed to convert event to object")
+                    .clone(),
+            )),
+            Nip70Request::PayInvoice(request) => Some(JsonRpcStructuredValue::Object(
+                // This should never panic, since we're converting a `PayInvoiceRequest`
+                // struct, which should always serialize to a JSON object.
+                json!(request)
+                    .as_object()
+                    .expect("Failed to convert request to object")
+                    .clone(),
+            )),
+            Nip70Request::GetRelays => None,
+        }
+    }
+
+    fn to_json_rpc_request(&self, request_id: JsonRpcId) -> JsonRpcRequest {
+        JsonRpcRequest::new(
+            self.get_method_name().to_string(),
+            self.get_params(),
+            request_id,
+        )
     }
 
     fn from_json_rpc_request(request: &JsonRpcRequest) -> Result<Self, JsonRpcError> {
