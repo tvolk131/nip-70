@@ -48,11 +48,11 @@ impl Nip70ServerError {
         }
     }
 
-    fn from_json_rpc_error(error: &JsonRpcError) -> Result<Self, JsonRpcError> {
+    fn from_json_rpc_error<'a>(error: &'a JsonRpcError) -> Result<Self, &'a JsonRpcError> {
         match error.code() {
             JsonRpcErrorCode::Custom(1) => Ok(Nip70ServerError::Rejected),
             JsonRpcErrorCode::Custom(2) => Ok(Nip70ServerError::InternalError),
-            _ => Err(error.clone()),
+            _ => Err(error),
         }
     }
 }
@@ -250,15 +250,7 @@ impl Nip70Client {
             .send_request(json_rpc_request.clone())
             .await
             .map_err(Nip70ClientError::UdsClientError)?;
-        match Nip70Response::from_json_rpc_response_data(
-            &json_rpc_request,
-            json_rpc_response.data(),
-        )
-        .map_err(|_| Nip70ClientError::ProtocolError)?
-        {
-            Nip70Response::Error(err) => Err(Nip70ClientError::ServerError(err)),
-            response => Ok(response),
-        }
+        Nip70Response::from_json_rpc_response_data(&json_rpc_request, json_rpc_response.data())
     }
 }
 
@@ -399,13 +391,13 @@ impl Nip70Response {
     fn from_json_rpc_response_data(
         request: &JsonRpcRequest,
         response: &JsonRpcResponseData,
-    ) -> Result<Self, JsonRpcError> {
+    ) -> Result<Self, Nip70ClientError> {
         let result = match response {
             JsonRpcResponseData::Success { result } => result,
             JsonRpcResponseData::Error { error } => {
                 return match Nip70ServerError::from_json_rpc_error(error) {
                     Ok(err) => Ok(Nip70Response::Error(err)),
-                    Err(err) => Err(err),
+                    Err(_err) => Err(Nip70ClientError::ProtocolError),
                 }
             }
         };
@@ -415,51 +407,31 @@ impl Nip70Response {
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError::new(
-                        JsonRpcErrorCode::InternalError,
-                        "Internal error".to_string(),
-                        None,
-                    ));
+                    return Err(Nip70ClientError::ProtocolError);
                 },
             )),
             METHOD_NAME_SIGN_EVENT => Ok(Nip70Response::Event(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError::new(
-                        JsonRpcErrorCode::InternalError,
-                        "Internal error".to_string(),
-                        None,
-                    ));
+                    return Err(Nip70ClientError::ProtocolError);
                 },
             )),
             METHOD_NAME_PAY_INVOICE => Ok(Nip70Response::InvoicePaid(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError::new(
-                        JsonRpcErrorCode::InternalError,
-                        "Internal error".to_string(),
-                        None,
-                    ));
+                    return Err(Nip70ClientError::ProtocolError);
                 },
             )),
             METHOD_NAME_GET_RELAYS => Ok(Nip70Response::Relays(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
-                    return Err(JsonRpcError::new(
-                        JsonRpcErrorCode::InternalError,
-                        "Internal error".to_string(),
-                        None,
-                    ));
+                    return Err(Nip70ClientError::ProtocolError);
                 },
             )),
-            _ => Err(JsonRpcError::new(
-                JsonRpcErrorCode::MethodNotFound,
-                "Method not found".to_string(),
-                None,
-            )),
+            _ => Err(Nip70ClientError::ProtocolError),
         }
     }
 }
