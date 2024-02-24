@@ -65,7 +65,7 @@ impl JsonRpcClientTransport<UdsClientError> for UnixDomainSocketJsonRpcClientTra
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum UdsClientError {
     /// A Unix domain socket server is not running on the specified address.
     ServerNotRunning,

@@ -24,7 +24,7 @@ const METHOD_NAME_PAY_INVOICE: &str = "payInvoice";
 const METHOD_NAME_GET_RELAYS: &str = "getRelays";
 
 /// Errors that can be returned from [`Nip70`] trait functions.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Nip70ServerError {
     /// The server rejected the request. This most likely means that the user
     /// declined to perform the operation for the app that requested it.
@@ -165,7 +165,7 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
 }
 
 /// Errors that can be returned from [`Nip70Client`] functions.
-#[derive(PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Nip70ClientError {
     UdsClientError(UdsClientError),
     ProtocolError,
@@ -416,14 +416,14 @@ impl Nip70Response {
 }
 
 /// A policy that specifies whether a relay is allowed to read or write to the server.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RelayPolicy {
     read: bool,
     write: bool,
 }
 
 /// A request to pay an invoice.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PayInvoiceRequest {
     /// Bolt11 invoice to pay.
     #[serde(
@@ -459,7 +459,7 @@ where
 }
 
 /// A response to a pay invoice request.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum PayInvoiceResponse {
     /// The invoice was paid successfully. Contains the preimage of the payment.
     Success(String),
