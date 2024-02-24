@@ -138,24 +138,24 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
 
             let response_or = match parsed_request {
                 Nip70Request::GetPublicKey => match self.nip70.get_public_key().await {
-                    Ok(public_key) => Ok(Nip70Response::PublicKey(public_key)),
+                    Ok(public_key) => Ok(Nip70Response::GetPublicKey(public_key)),
                     Err(err) => Err(err),
                 },
                 // TODO: Let's get the pubkey and check it against the unsigned event before signing.
                 Nip70Request::SignEvent(event) => match self.nip70.sign_event(event).await {
-                    Ok(event) => Ok(Nip70Response::Event(event)),
+                    Ok(event) => Ok(Nip70Response::SignEvent(event)),
                     Err(err) => Err(err),
                 },
                 Nip70Request::PayInvoice(pay_invoice_request) => {
                     match self.nip70.pay_invoice(pay_invoice_request).await {
                         Ok(pay_invoice_response) => {
-                            Ok(Nip70Response::InvoicePaid(pay_invoice_response))
+                            Ok(Nip70Response::PayInvoice(pay_invoice_response))
                         }
                         Err(err) => Err(err),
                     }
                 }
                 Nip70Request::GetRelays => match self.nip70.get_relays().await {
-                    Ok(relays) => Ok(Nip70Response::Relays(relays)),
+                    Ok(relays) => Ok(Nip70Response::GetRelays(relays)),
                     Err(err) => Err(err),
                 },
             };
@@ -208,7 +208,7 @@ impl Nip70Client {
         self.send_request(Nip70Request::GetPublicKey)
             .await
             .map(|response| match response {
-                Nip70Response::PublicKey(public_key) => Ok(public_key),
+                Nip70Response::GetPublicKey(public_key) => Ok(public_key),
                 _ => Err(Nip70ClientError::ProtocolError),
             })?
     }
@@ -218,7 +218,7 @@ impl Nip70Client {
         self.send_request(Nip70Request::SignEvent(event))
             .await
             .map(|response| match response {
-                Nip70Response::Event(event) => Ok(event),
+                Nip70Response::SignEvent(event) => Ok(event),
                 _ => Err(Nip70ClientError::ProtocolError),
             })?
     }
@@ -231,7 +231,7 @@ impl Nip70Client {
         self.send_request(Nip70Request::PayInvoice(request))
             .await
             .map(|response| match response {
-                Nip70Response::InvoicePaid(response) => Ok(response),
+                Nip70Response::PayInvoice(response) => Ok(response),
                 _ => Err(Nip70ClientError::ProtocolError),
             })?
     }
@@ -244,7 +244,7 @@ impl Nip70Client {
         self.send_request(Nip70Request::GetRelays)
             .await
             .map(|response| match response {
-                Nip70Response::Relays(response) => Ok(response),
+                Nip70Response::GetRelays(response) => Ok(response),
                 _ => Err(Nip70ClientError::ProtocolError),
             })?
     }
@@ -343,25 +343,25 @@ impl Nip70Request {
 }
 
 enum Nip70Response {
-    PublicKey(XOnlyPublicKey),
-    Event(Event),
-    InvoicePaid(PayInvoiceResponse),
-    Relays(Option<HashMap<String, RelayPolicy>>),
+    GetPublicKey(XOnlyPublicKey),
+    SignEvent(Event),
+    PayInvoice(PayInvoiceResponse),
+    GetRelays(Option<HashMap<String, RelayPolicy>>),
 }
 
 impl Nip70Response {
     fn to_json_rpc_response_data(&self) -> JsonRpcResponseData {
         match self {
-            Nip70Response::PublicKey(response) => JsonRpcResponseData::Success {
+            Nip70Response::GetPublicKey(response) => JsonRpcResponseData::Success {
                 result: serde_json::to_value(response).unwrap(),
             },
-            Nip70Response::Event(response) => JsonRpcResponseData::Success {
+            Nip70Response::SignEvent(response) => JsonRpcResponseData::Success {
                 result: serde_json::to_value(response).unwrap(),
             },
-            Nip70Response::InvoicePaid(response) => JsonRpcResponseData::Success {
+            Nip70Response::PayInvoice(response) => JsonRpcResponseData::Success {
                 result: serde_json::to_value(response).unwrap(),
             },
-            Nip70Response::Relays(response) => JsonRpcResponseData::Success {
+            Nip70Response::GetRelays(response) => JsonRpcResponseData::Success {
                 result: serde_json::to_value(response).unwrap(),
             },
         }
@@ -382,28 +382,28 @@ impl Nip70Response {
         };
 
         match request.method() {
-            METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Response::PublicKey(
+            METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Response::GetPublicKey(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
                     return Err(Nip70ClientError::ProtocolError);
                 },
             )),
-            METHOD_NAME_SIGN_EVENT => Ok(Nip70Response::Event(
+            METHOD_NAME_SIGN_EVENT => Ok(Nip70Response::SignEvent(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
                     return Err(Nip70ClientError::ProtocolError);
                 },
             )),
-            METHOD_NAME_PAY_INVOICE => Ok(Nip70Response::InvoicePaid(
+            METHOD_NAME_PAY_INVOICE => Ok(Nip70Response::PayInvoice(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
                     return Err(Nip70ClientError::ProtocolError);
                 },
             )),
-            METHOD_NAME_GET_RELAYS => Ok(Nip70Response::Relays(
+            METHOD_NAME_GET_RELAYS => Ok(Nip70Response::GetRelays(
                 if let Ok(value) = serde_json::from_value(result.clone()) {
                     value
                 } else {
