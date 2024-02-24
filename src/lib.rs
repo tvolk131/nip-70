@@ -260,7 +260,7 @@ impl Nip70Client {
             .send_request(json_rpc_request.clone())
             .await
             .map_err(Nip70ClientError::UdsClientError)?;
-        Nip70Response::from_json_rpc_response_data(&json_rpc_request, json_rpc_response.data())
+        Nip70Response::from_json_rpc_response_data(json_rpc_response.data())
     }
 }
 
@@ -345,6 +345,8 @@ impl Nip70Request {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 enum Nip70Response {
     GetPublicKey(XOnlyPublicKey),
     SignEvent(Event),
@@ -354,24 +356,12 @@ enum Nip70Response {
 
 impl Nip70Response {
     fn to_json_rpc_response_data(&self) -> JsonRpcResponseData {
-        match self {
-            Nip70Response::GetPublicKey(response) => JsonRpcResponseData::Success {
-                result: serde_json::to_value(response).unwrap(),
-            },
-            Nip70Response::SignEvent(response) => JsonRpcResponseData::Success {
-                result: serde_json::to_value(response).unwrap(),
-            },
-            Nip70Response::PayInvoice(response) => JsonRpcResponseData::Success {
-                result: serde_json::to_value(response).unwrap(),
-            },
-            Nip70Response::GetRelays(response) => JsonRpcResponseData::Success {
-                result: serde_json::to_value(response).unwrap(),
-            },
+        JsonRpcResponseData::Success {
+            result: serde_json::to_value(self).unwrap(),
         }
     }
 
     fn from_json_rpc_response_data(
-        request: &JsonRpcRequest,
         response: &JsonRpcResponseData,
     ) -> Result<Self, Nip70ClientError> {
         let result = match response {
@@ -381,36 +371,10 @@ impl Nip70Response {
             }
         };
 
-        match request.method() {
-            METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Response::GetPublicKey(
-                if let Ok(value) = serde_json::from_value(result.clone()) {
-                    value
-                } else {
-                    return Err(Nip70ClientError::ProtocolError);
-                },
-            )),
-            METHOD_NAME_SIGN_EVENT => Ok(Nip70Response::SignEvent(
-                if let Ok(value) = serde_json::from_value(result.clone()) {
-                    value
-                } else {
-                    return Err(Nip70ClientError::ProtocolError);
-                },
-            )),
-            METHOD_NAME_PAY_INVOICE => Ok(Nip70Response::PayInvoice(
-                if let Ok(value) = serde_json::from_value(result.clone()) {
-                    value
-                } else {
-                    return Err(Nip70ClientError::ProtocolError);
-                },
-            )),
-            METHOD_NAME_GET_RELAYS => Ok(Nip70Response::GetRelays(
-                if let Ok(value) = serde_json::from_value(result.clone()) {
-                    value
-                } else {
-                    return Err(Nip70ClientError::ProtocolError);
-                },
-            )),
-            _ => Err(Nip70ClientError::ProtocolError),
+        if let Ok(value) = serde_json::from_value(result.clone()) {
+            Ok(value)
+        } else {
+            Err(Nip70ClientError::ProtocolError)
         }
     }
 }
