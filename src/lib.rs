@@ -32,6 +32,9 @@ pub enum Nip70ServerError {
 
     /// The server encountered an internal error while processing the request.
     InternalError,
+
+    /// The server does not support the requested method.
+    MethodNotFound,
 }
 
 impl Nip70ServerError {
@@ -41,8 +44,13 @@ impl Nip70ServerError {
                 JsonRpcError::new(JsonRpcErrorCode::Custom(1), "Rejected".to_string(), None)
             }
             Nip70ServerError::InternalError => JsonRpcError::new(
-                JsonRpcErrorCode::Custom(2),
+                JsonRpcErrorCode::InternalError,
                 "Internal error".to_string(),
+                None,
+            ),
+            Nip70ServerError::MethodNotFound => JsonRpcError::new(
+                JsonRpcErrorCode::MethodNotFound,
+                "Method not found".to_string(),
                 None,
             ),
         }
@@ -121,7 +129,9 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
             let parsed_request = match Nip70Request::from_json_rpc_request(&request) {
                 Ok(request) => request,
                 Err(error) => {
-                    responses.push(JsonRpcResponseData::Error { error });
+                    responses.push(JsonRpcResponseData::Error {
+                        error: error.to_json_rpc_error(),
+                    });
                     continue;
                 }
             };
@@ -302,59 +312,35 @@ impl Nip70Request {
         )
     }
 
-    fn from_json_rpc_request(request: &JsonRpcRequest) -> Result<Self, JsonRpcError> {
+    fn from_json_rpc_request(request: &JsonRpcRequest) -> Result<Self, Nip70ServerError> {
         match request.method() {
             METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Request::GetPublicKey),
             METHOD_NAME_SIGN_EVENT => Ok(Nip70Request::SignEvent(
                 if let Ok(value) =
                     serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
                         Some(value) => value,
-                        None => {
-                            return Err(JsonRpcError::new(
-                                JsonRpcErrorCode::InternalError,
-                                "Internal error".to_string(),
-                                None,
-                            ))
-                        }
+                        None => return Err(Nip70ServerError::InternalError),
                     })
                 {
                     value
                 } else {
-                    return Err(JsonRpcError::new(
-                        JsonRpcErrorCode::InternalError,
-                        "Internal error".to_string(),
-                        None,
-                    ));
+                    return Err(Nip70ServerError::InternalError);
                 },
             )),
             METHOD_NAME_PAY_INVOICE => Ok(Nip70Request::PayInvoice(
                 if let Ok(value) =
                     serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
                         Some(value) => value,
-                        None => {
-                            return Err(JsonRpcError::new(
-                                JsonRpcErrorCode::InternalError,
-                                "Internal error".to_string(),
-                                None,
-                            ))
-                        }
+                        None => return Err(Nip70ServerError::InternalError),
                     })
                 {
                     value
                 } else {
-                    return Err(JsonRpcError::new(
-                        JsonRpcErrorCode::InternalError,
-                        "Internal error".to_string(),
-                        None,
-                    ));
+                    return Err(Nip70ServerError::InternalError);
                 },
             )),
             METHOD_NAME_GET_RELAYS => Ok(Nip70Request::GetRelays),
-            _ => Err(JsonRpcError::new(
-                JsonRpcErrorCode::MethodNotFound,
-                "Method not found".to_string(),
-                None,
-            )),
+            _ => Err(Nip70ServerError::MethodNotFound),
         }
     }
 }
