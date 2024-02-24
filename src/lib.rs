@@ -381,10 +381,10 @@ impl Nip70Response {
         let result = match response {
             JsonRpcResponseData::Success { result } => result,
             JsonRpcResponseData::Error { error } => {
-                return match Nip70ServerError::from_json_rpc_error(error) {
-                    Ok(err) => Ok(Nip70Response::Error(err)),
-                    Err(_err) => Err(Nip70ClientError::ProtocolError),
-                }
+                return Err(match Nip70ServerError::from_json_rpc_error(error) {
+                    Ok(err) => Nip70ClientError::ServerError(err),
+                    Err(_err) => Nip70ClientError::ProtocolError,
+                })
             }
         };
 
