@@ -55,14 +55,6 @@ impl Nip70ServerError {
             ),
         }
     }
-
-    fn from_json_rpc_error<'a>(error: &'a JsonRpcError) -> Result<Self, &'a JsonRpcError> {
-        match error.code() {
-            JsonRpcErrorCode::Custom(1) => Ok(Nip70ServerError::Rejected),
-            JsonRpcErrorCode::Custom(2) => Ok(Nip70ServerError::InternalError),
-            _ => Err(error),
-        }
-    }
 }
 
 // Defines the server-side functionality for the NIP-70 protocol.
@@ -178,6 +170,17 @@ pub enum Nip70ClientError {
     UdsClientError(UdsClientError),
     ProtocolError,
     ServerError(Nip70ServerError),
+}
+
+impl Nip70ClientError {
+    fn from_json_rpc_error(error: &JsonRpcError) -> Self {
+        match error.code() {
+            JsonRpcErrorCode::Custom(1) => Self::ServerError(Nip70ServerError::Rejected),
+            JsonRpcErrorCode::InternalError => Self::ServerError(Nip70ServerError::InternalError),
+            JsonRpcErrorCode::MethodNotFound => Self::ServerError(Nip70ServerError::MethodNotFound),
+            _ => Self::ProtocolError,
+        }
+    }
 }
 
 /// A client for the NIP-70 protocol.
@@ -374,10 +377,7 @@ impl Nip70Response {
         let result = match response {
             JsonRpcResponseData::Success { result } => result,
             JsonRpcResponseData::Error { error } => {
-                return Err(match Nip70ServerError::from_json_rpc_error(error) {
-                    Ok(err) => Nip70ClientError::ServerError(err),
-                    Err(_err) => Nip70ClientError::ProtocolError,
-                })
+                return Err(Nip70ClientError::from_json_rpc_error(error))
             }
         };
 
