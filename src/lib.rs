@@ -58,8 +58,8 @@ impl Nip70ServerError {
     }
 }
 
-// Defines the server-side functionality for the NIP-70 protocol.
-// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
+/// Defines the server-side functionality for the NIP-70 protocol.
+/// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
     // -----------------
@@ -88,14 +88,14 @@ pub trait Nip70: Send + Sync {
     // Optional methods.
     // -----------------
 
-    // Returns the list of relays that the server is aware of, or `None` if
-    // the server does not support this feature.
+    /// Returns the list of relays that the server is aware of, or `None` if
+    /// the server does not support this feature.
     async fn get_relays(&self) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ServerError> {
         Ok(None)
     }
 }
 
-// Creates and starts a NIP-70 compliant Unix domain socket server.
+/// Creates and starts a NIP-70 compliant Unix domain socket server.
 pub fn run_nip70_server(nip70: Arc<dyn Nip70>) -> std::io::Result<JsonRpcServer> {
     run_nip70_server_internal(nip70, NIP70_UDS_ADDRESS.to_string())
 }
