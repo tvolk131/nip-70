@@ -6,7 +6,7 @@ use json_rpc::{
     JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
 };
 use lightning_invoice::Bolt11Invoice;
-use nostr_sdk::secp256k1::XOnlyPublicKey;
+use nostr_sdk::PublicKey;
 use nostr_sdk::{Event, UnsignedEvent};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::json;
@@ -73,7 +73,7 @@ pub trait Nip70: Send + Sync {
     ) -> Result<(), Nip70ServerError>;
 
     /// Returns the public key of the signed-in user.
-    async fn get_public_key(&self) -> Result<XOnlyPublicKey, Nip70ServerError>;
+    async fn get_public_key(&self) -> Result<PublicKey, Nip70ServerError>;
 
     /// Signs a Nostr event on behalf of the signed-in user.
     async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError>;
@@ -237,7 +237,7 @@ impl Nip70Client {
     }
 
     /// Fetches the public key of the signed-in user from the NIP-70 server.
-    pub async fn get_public_key(&self) -> Result<XOnlyPublicKey, Nip70ClientError> {
+    pub async fn get_public_key(&self) -> Result<PublicKey, Nip70ClientError> {
         self.send_request(Nip70Request::GetPublicKey)
             .await
             .map(|response| match response {
@@ -401,7 +401,7 @@ impl Nip70Request {
 #[serde(untagged)]
 enum Nip70Response {
     RegisterApplication,
-    GetPublicKey(XOnlyPublicKey),
+    GetPublicKey(PublicKey),
     SignEvent(Event),
     PayInvoice(PayInvoiceResponse),
     GetRelays(Option<HashMap<String, RelayPolicy>>),
@@ -443,7 +443,7 @@ pub struct RelayPolicy {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RegisterApplicationRequest {
     /// The nPub of the client application.
-    pubkey: XOnlyPublicKey,
+    pubkey: PublicKey,
 
     /// The name of the client application that is suggested by the client.
     display_name: String,
@@ -544,7 +544,7 @@ mod tests {
             Ok(())
         }
 
-        async fn get_public_key(&self) -> Result<XOnlyPublicKey, Nip70ServerError> {
+        async fn get_public_key(&self) -> Result<PublicKey, Nip70ServerError> {
             if self.reject_all_requests {
                 return Err(Nip70ServerError::Rejected);
             }
