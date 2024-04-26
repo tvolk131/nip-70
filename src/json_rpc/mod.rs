@@ -1,5 +1,6 @@
 pub mod uds;
 
+use crate::uds_req_res::{UdsRequest, UdsResponse};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -100,6 +101,31 @@ pub struct JsonRpcRequest {
     id: JsonRpcId,
 }
 
+impl UdsRequest for JsonRpcRequest {}
+
+impl JsonRpcRequest {
+    pub fn new(method: String, params: Option<JsonRpcStructuredValue>, id: JsonRpcId) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion::V2,
+            method,
+            params,
+            id,
+        }
+    }
+
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    pub fn params(&self) -> Option<&JsonRpcStructuredValue> {
+        self.params.as_ref()
+    }
+
+    pub fn id(&self) -> &JsonRpcId {
+        &self.id
+    }
+}
+
 #[derive(PartialEq, Debug, Clone)]
 pub enum JsonRpcId {
     Number(i32),
@@ -145,29 +171,6 @@ impl<'de> Deserialize<'de> for JsonRpcId {
     }
 }
 
-impl JsonRpcRequest {
-    pub fn new(method: String, params: Option<JsonRpcStructuredValue>, id: JsonRpcId) -> Self {
-        Self {
-            jsonrpc: JsonRpcVersion::V2,
-            method,
-            params,
-            id,
-        }
-    }
-
-    pub fn method(&self) -> &str {
-        &self.method
-    }
-
-    pub fn params(&self) -> Option<&JsonRpcStructuredValue> {
-        self.params.as_ref()
-    }
-
-    pub fn id(&self) -> &JsonRpcId {
-        &self.id
-    }
-}
-
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 #[serde(untagged)]
 pub enum JsonRpcStructuredValue {
@@ -190,6 +193,34 @@ pub struct JsonRpcResponse {
     #[serde(flatten)]
     data: JsonRpcResponseData,
     id: JsonRpcId,
+}
+
+impl UdsResponse for JsonRpcResponse {
+    fn request_parse_error_response() -> Self {
+        Self::new(
+            JsonRpcResponseData::Error {
+                error: JsonRpcError {
+                    code: JsonRpcErrorCode::ParseError,
+                    message: "Failed to parse request".to_string(),
+                    data: None,
+                },
+            },
+            JsonRpcId::Null,
+        )
+    }
+
+    fn internal_error_response(msg: String) -> Self {
+        Self::new(
+            JsonRpcResponseData::Error {
+                error: JsonRpcError {
+                    code: JsonRpcErrorCode::InternalError,
+                    message: msg,
+                    data: None,
+                },
+            },
+            JsonRpcId::Null,
+        )
+    }
 }
 
 impl JsonRpcResponse {

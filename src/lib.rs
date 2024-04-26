@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use json_rpc::uds::client::{UdsClientError, UnixDomainSocketJsonRpcClientTransport};
+use json_rpc::uds::client::UnixDomainSocketJsonRpcClientTransport;
 use json_rpc::uds::server::UnixDomainSocketJsonRpcServerTransport;
 use json_rpc::{
     JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
@@ -13,8 +13,10 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use uds_req_res::client::UdsClientError;
 
 mod json_rpc;
+mod uds_req_res;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 
