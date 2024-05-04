@@ -5,7 +5,6 @@ use json_rpc::{
     JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
     JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
 };
-use nostr_sdk::PublicKey;
 use nostr_sdk::{Event, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -17,7 +16,6 @@ mod uds_req_res;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 
-const METHOD_NAME_GET_PUBLIC_KEY: &str = "getPublicKey";
 const METHOD_NAME_SIGN_EVENT: &str = "signEvent";
 
 /// Errors that can be returned from [`Nip70`] trait functions.
@@ -58,9 +56,6 @@ impl Nip70ServerError {
 /// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
-    /// Returns the public key of the signed-in user.
-    async fn get_public_key(&self) -> Result<PublicKey, Nip70ServerError>;
-
     /// Signs a Nostr event on behalf of the signed-in user.
     async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError>;
 }
@@ -106,10 +101,6 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
             };
 
             let response_or = match parsed_request {
-                Nip70Request::GetPublicKey => match self.nip70.get_public_key().await {
-                    Ok(public_key) => Ok(Nip70Response::GetPublicKey(public_key)),
-                    Err(err) => Err(err),
-                },
                 // TODO: Let's get the pubkey and check it against the unsigned event before signing.
                 Nip70Request::SignEvent(event) => match self.nip70.sign_event(event).await {
                     Ok(event) => Ok(Nip70Response::SignEvent(event)),
@@ -171,23 +162,12 @@ impl Nip70Client {
         }
     }
 
-    /// Fetches the public key of the signed-in user from the NIP-70 server.
-    pub async fn get_public_key(&self) -> Result<PublicKey, Nip70ClientError> {
-        self.send_request(Nip70Request::GetPublicKey)
-            .await
-            .map(|response| match response {
-                Nip70Response::GetPublicKey(public_key) => Ok(public_key),
-                _ => Err(Nip70ClientError::ProtocolError),
-            })?
-    }
-
     /// Signs a Nostr event on behalf of the signed-in user using the NIP-70 server.
     pub async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ClientError> {
         self.send_request(Nip70Request::SignEvent(event))
             .await
             .map(|response| match response {
                 Nip70Response::SignEvent(event) => Ok(event),
-                _ => Err(Nip70ClientError::ProtocolError),
             })?
     }
 
@@ -204,21 +184,18 @@ impl Nip70Client {
 }
 
 enum Nip70Request {
-    GetPublicKey,
     SignEvent(UnsignedEvent),
 }
 
 impl Nip70Request {
     fn get_method_name(&self) -> &str {
         match self {
-            Nip70Request::GetPublicKey => METHOD_NAME_GET_PUBLIC_KEY,
             Nip70Request::SignEvent(_) => METHOD_NAME_SIGN_EVENT,
         }
     }
 
     fn get_params(&self) -> Option<JsonRpcStructuredValue> {
         match self {
-            Nip70Request::GetPublicKey => None,
             Nip70Request::SignEvent(event) => Some(JsonRpcStructuredValue::Object(
                 // This should never panic, since we're converting an `UnsignedEvent`
                 // struct, which should always serialize to a JSON object.
@@ -240,7 +217,6 @@ impl Nip70Request {
 
     fn from_json_rpc_request(request: &JsonRpcRequest) -> Result<Self, Nip70ServerError> {
         match request.method() {
-            METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Request::GetPublicKey),
             METHOD_NAME_SIGN_EVENT => Ok(Nip70Request::SignEvent(
                 if let Ok(value) =
                     serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
@@ -261,7 +237,6 @@ impl Nip70Request {
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum Nip70Response {
-    GetPublicKey(PublicKey),
     SignEvent(Event),
 }
 
@@ -303,31 +278,33 @@ mod tests {
     }
 
     impl TestNip70Implementation {
-        fn new_with_generated_keys() -> Self {
-            Self {
-                keys: Keys::generate(),
-                reject_all_requests: false,
-            }
+        fn new_with_generated_keys() -> (Self, Keys) {
+            let keys = Keys::generate();
+
+            (
+                Self {
+                    keys: keys.clone(),
+                    reject_all_requests: false,
+                },
+                keys,
+            )
         }
 
-        fn new_rejecting_all_requests() -> Self {
-            Self {
-                keys: Keys::generate(),
-                reject_all_requests: true,
-            }
+        fn new_rejecting_all_requests() -> (Self, Keys) {
+            let keys = Keys::generate();
+
+            (
+                Self {
+                    keys: keys.clone(),
+                    reject_all_requests: true,
+                },
+                keys,
+            )
         }
     }
 
     #[async_trait]
     impl Nip70 for TestNip70Implementation {
-        async fn get_public_key(&self) -> Result<PublicKey, Nip70ServerError> {
-            if self.reject_all_requests {
-                return Err(Nip70ServerError::Rejected);
-            }
-
-            Ok(self.keys.public_key())
-        }
-
         async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError> {
             if self.reject_all_requests {
                 return Err(Nip70ServerError::Rejected);
@@ -360,24 +337,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_public_key_over_uds() {
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
-
-        assert_eq!(
-            nip70.get_public_key().await.unwrap(),
-            client.get_public_key().await.unwrap()
-        );
-
-        server.stop();
-    }
-
-    #[tokio::test]
     async fn sign_event_over_uds() {
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
+        let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
+        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
-        let pubkey = client.get_public_key().await.unwrap();
+        let pubkey = keys.public_key();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -400,10 +364,10 @@ mod tests {
 
     #[tokio::test]
     async fn sign_large_event_over_uds() {
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
+        let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
+        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
-        let pubkey = client.get_public_key().await.unwrap();
+        let pubkey = keys.public_key();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
@@ -428,21 +392,22 @@ mod tests {
     #[should_panic(expected = "must be called from the context of a Tokio 1.x runtime")]
     fn run_server_without_async_runtime() {
         let uds_address = get_free_uds_address();
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        run_nip70_server_internal(nip70.clone(), uds_address.clone()).unwrap();
+        let (nip70, _keys) = TestNip70Implementation::new_with_generated_keys();
+        run_nip70_server_internal(Arc::from(nip70), uds_address.clone()).unwrap();
     }
 
     #[tokio::test]
     async fn sign_event_over_uds_load() {
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
+        let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
+        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
+
+        let pubkey = keys.public_key();
 
         let mut client_handles = Vec::new();
         for i in 0..128 {
             let client = client.clone();
             let handle = tokio::spawn(async move {
                 for j in 0..20 {
-                    let pubkey = client.get_public_key().await.unwrap();
                     let created_at = Timestamp::now();
                     let kind = Kind::TextNote;
                     let tags = vec![];
@@ -478,25 +443,52 @@ mod tests {
     #[tokio::test]
     async fn make_rpc_with_no_server() {
         let client = Nip70Client::new_internal(get_free_uds_address());
+        let keys = Keys::generate();
 
-        let public_key_or = client.get_public_key().await;
-        assert!(public_key_or.is_err());
+        let pubkey = keys.public_key();
+        let created_at = Timestamp::now();
+        let kind = Kind::TextNote;
+        let tags = vec![];
+        let content = String::from("Hello, world!");
+        let unsigned_event = UnsignedEvent {
+            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            pubkey,
+            created_at,
+            kind,
+            tags,
+            content,
+        };
+
         assert_eq!(
-            public_key_or.unwrap_err(),
-            Nip70ClientError::UdsClientError(UdsClientError::ServerNotRunning)
+            client.sign_event(unsigned_event).await,
+            Err(Nip70ClientError::UdsClientError(
+                UdsClientError::ServerNotRunning
+            ))
         );
     }
 
     #[tokio::test]
     async fn make_rpc_with_rejected_request() {
-        let nip70 = Arc::from(TestNip70Implementation::new_rejecting_all_requests());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
+        let (nip70, keys) = TestNip70Implementation::new_rejecting_all_requests();
+        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
-        let public_key_or = client.get_public_key().await;
-        assert!(public_key_or.is_err());
+        let pubkey = keys.public_key();
+        let created_at = Timestamp::now();
+        let kind = Kind::TextNote;
+        let tags = vec![];
+        let content = String::from("Hello, world!");
+        let unsigned_event = UnsignedEvent {
+            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            pubkey,
+            created_at,
+            kind,
+            tags,
+            content,
+        };
+
         assert_eq!(
-            public_key_or.unwrap_err(),
-            Nip70ClientError::ServerError(Nip70ServerError::Rejected)
+            client.sign_event(unsigned_event).await,
+            Err(Nip70ClientError::ServerError(Nip70ServerError::Rejected))
         );
 
         server.stop();
