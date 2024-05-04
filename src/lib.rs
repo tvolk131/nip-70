@@ -5,12 +5,10 @@ use json_rpc::{
     JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
     JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
 };
-use lightning_invoice::Bolt11Invoice;
 use nostr_sdk::PublicKey;
 use nostr_sdk::{Event, UnsignedEvent};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::str::FromStr;
 use std::sync::Arc;
 use uds_req_res::client::UdsClientError;
 
@@ -22,7 +20,6 @@ const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 const METHOD_NAME_REGISTER_APPLICATION: &str = "registerApplication";
 const METHOD_NAME_GET_PUBLIC_KEY: &str = "getPublicKey";
 const METHOD_NAME_SIGN_EVENT: &str = "signEvent";
-const METHOD_NAME_PAY_INVOICE: &str = "payInvoice";
 
 /// Errors that can be returned from [`Nip70`] trait functions.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,12 +70,6 @@ pub trait Nip70: Send + Sync {
 
     /// Signs a Nostr event on behalf of the signed-in user.
     async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError>;
-
-    /// Pays an invoice.
-    async fn pay_invoice(
-        &self,
-        pay_invoice_request: PayInvoiceRequest,
-    ) -> Result<PayInvoiceResponse, Nip70ServerError>;
 }
 
 /// Creates and starts a NIP-70 compliant Unix domain socket server.
@@ -139,14 +130,6 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
                     Ok(event) => Ok(Nip70Response::SignEvent(event)),
                     Err(err) => Err(err),
                 },
-                Nip70Request::PayInvoice(pay_invoice_request) => {
-                    match self.nip70.pay_invoice(pay_invoice_request).await {
-                        Ok(pay_invoice_response) => {
-                            Ok(Nip70Response::PayInvoice(pay_invoice_response))
-                        }
-                        Err(err) => Err(err),
-                    }
-                }
             };
 
             responses.push(match response_or {
@@ -238,19 +221,6 @@ impl Nip70Client {
             })?
     }
 
-    /// Pays an invoice using the NIP-70 server.
-    pub async fn pay_invoice(
-        &self,
-        request: PayInvoiceRequest,
-    ) -> Result<PayInvoiceResponse, Nip70ClientError> {
-        self.send_request(Nip70Request::PayInvoice(request))
-            .await
-            .map(|response| match response {
-                Nip70Response::PayInvoice(response) => Ok(response),
-                _ => Err(Nip70ClientError::ProtocolError),
-            })?
-    }
-
     async fn send_request(&self, request: Nip70Request) -> Result<Nip70Response, Nip70ClientError> {
         // TODO: Use a real request id.
         let json_rpc_request = request.to_json_rpc_request(JsonRpcId::Null);
@@ -267,7 +237,6 @@ enum Nip70Request {
     RegisterApplication(RegisterApplicationRequest),
     GetPublicKey,
     SignEvent(UnsignedEvent),
-    PayInvoice(PayInvoiceRequest),
 }
 
 impl Nip70Request {
@@ -276,7 +245,6 @@ impl Nip70Request {
             Nip70Request::RegisterApplication(_) => METHOD_NAME_REGISTER_APPLICATION,
             Nip70Request::GetPublicKey => METHOD_NAME_GET_PUBLIC_KEY,
             Nip70Request::SignEvent(_) => METHOD_NAME_SIGN_EVENT,
-            Nip70Request::PayInvoice(_) => METHOD_NAME_PAY_INVOICE,
         }
     }
 
@@ -297,14 +265,6 @@ impl Nip70Request {
                 json!(event)
                     .as_object()
                     .expect("Failed to convert event to object")
-                    .clone(),
-            )),
-            Nip70Request::PayInvoice(request) => Some(JsonRpcStructuredValue::Object(
-                // This should never panic, since we're converting a `PayInvoiceRequest`
-                // struct, which should always serialize to a JSON object.
-                json!(request)
-                    .as_object()
-                    .expect("Failed to convert request to object")
                     .clone(),
             )),
         }
@@ -345,18 +305,6 @@ impl Nip70Request {
                     return Err(Nip70ServerError::InternalError);
                 },
             )),
-            METHOD_NAME_PAY_INVOICE => Ok(Nip70Request::PayInvoice(
-                if let Ok(value) =
-                    serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
-                        Some(value) => value,
-                        None => return Err(Nip70ServerError::InternalError),
-                    })
-                {
-                    value
-                } else {
-                    return Err(Nip70ServerError::InternalError);
-                },
-            )),
             _ => Err(Nip70ServerError::MethodNotFound),
         }
     }
@@ -368,7 +316,6 @@ enum Nip70Response {
     RegisterApplication,
     GetPublicKey(PublicKey),
     SignEvent(Event),
-    PayInvoice(PayInvoiceResponse),
 }
 
 impl Nip70Response {
@@ -406,65 +353,11 @@ pub struct RegisterApplicationRequest {
     display_name: String,
 }
 
-/// A request to pay an invoice.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct PayInvoiceRequest {
-    /// Bolt11 invoice to pay.
-    #[serde(
-        serialize_with = "serialize_to_string",
-        deserialize_with = "deserialize_from_string"
-    )]
-    invoice: Bolt11Invoice,
-}
-
-impl PayInvoiceRequest {
-    pub fn new(invoice: Bolt11Invoice) -> Self {
-        Self { invoice }
-    }
-
-    pub fn invoice(&self) -> &Bolt11Invoice {
-        &self.invoice
-    }
-}
-
-fn serialize_to_string<S>(value: &Bolt11Invoice, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&value.to_string())
-}
-
-fn deserialize_from_string<'de, D>(deserializer: D) -> Result<Bolt11Invoice, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    Bolt11Invoice::from_str(&s).map_err(serde::de::Error::custom)
-}
-
-/// A response to a pay invoice request.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum PayInvoiceResponse {
-    /// The invoice was paid successfully. Contains the preimage of the payment.
-    Success(String),
-
-    /// The invoice was not paid successfully. Contains the reason for the failure.
-    ErrorPaymentFailed(String),
-
-    /// The invoice was malformed and could not be paid.
-    ErrorMalformedInvoice,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use bitcoin_hashes::Hash;
-    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
-    use nostr_sdk::{
-        secp256k1::{Secp256k1, SecretKey},
-        EventId, Keys, Kind, Timestamp,
-    };
+    use nostr_sdk::{EventId, Keys, Kind, Timestamp};
     use std::{sync::Mutex, time::Duration};
 
     struct TestNip70Implementation {
@@ -518,20 +411,6 @@ mod tests {
                 .sign(&self.keys)
                 .map_err(|_| Nip70ServerError::InternalError)
         }
-
-        async fn pay_invoice(
-            &self,
-            pay_invoice_request: PayInvoiceRequest,
-        ) -> Result<PayInvoiceResponse, Nip70ServerError> {
-            if self.reject_all_requests {
-                return Err(Nip70ServerError::Rejected);
-            }
-
-            Ok(PayInvoiceResponse::Success(format!(
-                "preimage for invoice {}",
-                pay_invoice_request.invoice
-            )))
-        }
     }
 
     lazy_static::lazy_static! {
@@ -552,29 +431,6 @@ mod tests {
         let server = run_nip70_server_internal(nip70, uds_address.clone()).unwrap();
         let client = Nip70Client::new_internal(uds_address);
         (server, client)
-    }
-
-    fn get_test_invoice() -> Bolt11Invoice {
-        let private_key = SecretKey::from_slice(
-            &[
-                0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f, 0xe2,
-                0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04, 0xa8, 0xca,
-                0x3b, 0x2d, 0xb7, 0x34,
-            ][..],
-        )
-        .unwrap();
-
-        let payment_hash = bitcoin_hashes::sha256::Hash::from_slice(&[0; 32][..]).unwrap();
-        let payment_secret = PaymentSecret([42u8; 32]);
-
-        InvoiceBuilder::new(Currency::Bitcoin)
-            .description("Coins pls!".into())
-            .payment_hash(payment_hash)
-            .payment_secret(payment_secret)
-            .current_timestamp()
-            .min_final_cltv_expiry_delta(144)
-            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
-            .unwrap()
     }
 
     #[tokio::test]
@@ -628,28 +484,6 @@ mod tests {
         let event = client.sign_event(unsigned_event).await.unwrap();
 
         assert!(event.verify().is_ok());
-
-        server.stop();
-    }
-
-    #[tokio::test]
-    async fn pay_invoice_over_uds() {
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
-
-        let invoice = get_test_invoice();
-
-        let pay_invoice_response = client
-            .pay_invoice(PayInvoiceRequest {
-                invoice: invoice.clone(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(
-            pay_invoice_response,
-            PayInvoiceResponse::Success(format!("preimage for invoice {invoice}"))
-        );
 
         server.stop();
     }
