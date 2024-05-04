@@ -10,7 +10,6 @@ use nostr_sdk::PublicKey;
 use nostr_sdk::{Event, UnsignedEvent};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::json;
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use uds_req_res::client::UdsClientError;
@@ -24,7 +23,6 @@ const METHOD_NAME_REGISTER_APPLICATION: &str = "registerApplication";
 const METHOD_NAME_GET_PUBLIC_KEY: &str = "getPublicKey";
 const METHOD_NAME_SIGN_EVENT: &str = "signEvent";
 const METHOD_NAME_PAY_INVOICE: &str = "payInvoice";
-const METHOD_NAME_GET_RELAYS: &str = "getRelays";
 
 /// Errors that can be returned from [`Nip70`] trait functions.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,10 +62,6 @@ impl Nip70ServerError {
 /// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
-    // -----------------
-    // Required methods.
-    // -----------------
-
     /// Registers a client application, so the server will know which client is making subsequent requests.
     async fn register_application(
         &self,
@@ -85,16 +79,6 @@ pub trait Nip70: Send + Sync {
         &self,
         pay_invoice_request: PayInvoiceRequest,
     ) -> Result<PayInvoiceResponse, Nip70ServerError>;
-
-    // -----------------
-    // Optional methods.
-    // -----------------
-
-    /// Returns the list of relays that the server is aware of, or `None` if
-    /// the server does not support this feature.
-    async fn get_relays(&self) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ServerError> {
-        Ok(None)
-    }
 }
 
 /// Creates and starts a NIP-70 compliant Unix domain socket server.
@@ -163,10 +147,6 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
                         Err(err) => Err(err),
                     }
                 }
-                Nip70Request::GetRelays => match self.nip70.get_relays().await {
-                    Ok(relays) => Ok(Nip70Response::GetRelays(relays)),
-                    Err(err) => Err(err),
-                },
             };
 
             responses.push(match response_or {
@@ -271,19 +251,6 @@ impl Nip70Client {
             })?
     }
 
-    /// Fetches the list of relays that the NIP-70 server is aware of.
-    /// If the server does not support this feature, returns `Ok(None)`.
-    pub async fn get_relays(
-        &self,
-    ) -> Result<Option<HashMap<String, RelayPolicy>>, Nip70ClientError> {
-        self.send_request(Nip70Request::GetRelays)
-            .await
-            .map(|response| match response {
-                Nip70Response::GetRelays(response) => Ok(response),
-                _ => Err(Nip70ClientError::ProtocolError),
-            })?
-    }
-
     async fn send_request(&self, request: Nip70Request) -> Result<Nip70Response, Nip70ClientError> {
         // TODO: Use a real request id.
         let json_rpc_request = request.to_json_rpc_request(JsonRpcId::Null);
@@ -301,7 +268,6 @@ enum Nip70Request {
     GetPublicKey,
     SignEvent(UnsignedEvent),
     PayInvoice(PayInvoiceRequest),
-    GetRelays,
 }
 
 impl Nip70Request {
@@ -311,7 +277,6 @@ impl Nip70Request {
             Nip70Request::GetPublicKey => METHOD_NAME_GET_PUBLIC_KEY,
             Nip70Request::SignEvent(_) => METHOD_NAME_SIGN_EVENT,
             Nip70Request::PayInvoice(_) => METHOD_NAME_PAY_INVOICE,
-            Nip70Request::GetRelays => METHOD_NAME_GET_RELAYS,
         }
     }
 
@@ -342,7 +307,6 @@ impl Nip70Request {
                     .expect("Failed to convert request to object")
                     .clone(),
             )),
-            Nip70Request::GetRelays => None,
         }
     }
 
@@ -393,7 +357,6 @@ impl Nip70Request {
                     return Err(Nip70ServerError::InternalError);
                 },
             )),
-            METHOD_NAME_GET_RELAYS => Ok(Nip70Request::GetRelays),
             _ => Err(Nip70ServerError::MethodNotFound),
         }
     }
@@ -406,7 +369,6 @@ enum Nip70Response {
     GetPublicKey(PublicKey),
     SignEvent(Event),
     PayInvoice(PayInvoiceResponse),
-    GetRelays(Option<HashMap<String, RelayPolicy>>),
 }
 
 impl Nip70Response {
@@ -432,13 +394,6 @@ impl Nip70Response {
             Err(Nip70ClientError::ProtocolError)
         }
     }
-}
-
-/// A policy that specifies whether a relay is allowed to read or write to the server.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct RelayPolicy {
-    read: bool,
-    write: bool,
 }
 
 /// A request to register a client application.
