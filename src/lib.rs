@@ -17,7 +17,6 @@ mod uds_req_res;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 
-const METHOD_NAME_REGISTER_APPLICATION: &str = "registerApplication";
 const METHOD_NAME_GET_PUBLIC_KEY: &str = "getPublicKey";
 const METHOD_NAME_SIGN_EVENT: &str = "signEvent";
 
@@ -59,12 +58,6 @@ impl Nip70ServerError {
 /// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
-    /// Registers a client application, so the server will know which client is making subsequent requests.
-    async fn register_application(
-        &self,
-        register_application_request: RegisterApplicationRequest,
-    ) -> Result<(), Nip70ServerError>;
-
     /// Returns the public key of the signed-in user.
     async fn get_public_key(&self) -> Result<PublicKey, Nip70ServerError>;
 
@@ -113,14 +106,6 @@ impl JsonRpcServerHandler for Nip70ServerHandler {
             };
 
             let response_or = match parsed_request {
-                Nip70Request::RegisterApplication(register_application_request) => match self
-                    .nip70
-                    .register_application(register_application_request)
-                    .await
-                {
-                    Ok(_) => Ok(Nip70Response::RegisterApplication),
-                    Err(err) => Err(err),
-                },
                 Nip70Request::GetPublicKey => match self.nip70.get_public_key().await {
                     Ok(public_key) => Ok(Nip70Response::GetPublicKey(public_key)),
                     Err(err) => Err(err),
@@ -186,21 +171,6 @@ impl Nip70Client {
         }
     }
 
-    /// Registers a client application with the NIP-70 server.
-    pub async fn register_application(
-        &self,
-        register_application_request: RegisterApplicationRequest,
-    ) -> Result<(), Nip70ClientError> {
-        self.send_request(Nip70Request::RegisterApplication(
-            register_application_request,
-        ))
-        .await
-        .map(|response| match response {
-            Nip70Response::RegisterApplication => Ok(()),
-            _ => Err(Nip70ClientError::ProtocolError),
-        })?
-    }
-
     /// Fetches the public key of the signed-in user from the NIP-70 server.
     pub async fn get_public_key(&self) -> Result<PublicKey, Nip70ClientError> {
         self.send_request(Nip70Request::GetPublicKey)
@@ -234,7 +204,6 @@ impl Nip70Client {
 }
 
 enum Nip70Request {
-    RegisterApplication(RegisterApplicationRequest),
     GetPublicKey,
     SignEvent(UnsignedEvent),
 }
@@ -242,7 +211,6 @@ enum Nip70Request {
 impl Nip70Request {
     fn get_method_name(&self) -> &str {
         match self {
-            Nip70Request::RegisterApplication(_) => METHOD_NAME_REGISTER_APPLICATION,
             Nip70Request::GetPublicKey => METHOD_NAME_GET_PUBLIC_KEY,
             Nip70Request::SignEvent(_) => METHOD_NAME_SIGN_EVENT,
         }
@@ -250,14 +218,6 @@ impl Nip70Request {
 
     fn get_params(&self) -> Option<JsonRpcStructuredValue> {
         match self {
-            Nip70Request::RegisterApplication(request) => Some(JsonRpcStructuredValue::Object(
-                // This should never panic, since we're converting a `RegisterApplicationRequest`
-                // struct, which should always serialize to a JSON object.
-                json!(request)
-                    .as_object()
-                    .expect("Failed to convert request to object")
-                    .clone(),
-            )),
             Nip70Request::GetPublicKey => None,
             Nip70Request::SignEvent(event) => Some(JsonRpcStructuredValue::Object(
                 // This should never panic, since we're converting an `UnsignedEvent`
@@ -280,18 +240,6 @@ impl Nip70Request {
 
     fn from_json_rpc_request(request: &JsonRpcRequest) -> Result<Self, Nip70ServerError> {
         match request.method() {
-            METHOD_NAME_REGISTER_APPLICATION => Ok(Nip70Request::RegisterApplication(
-                if let Ok(value) =
-                    serde_json::from_value(match request.params().map(|v| v.clone().into_value()) {
-                        Some(value) => value,
-                        None => return Err(Nip70ServerError::InternalError),
-                    })
-                {
-                    value
-                } else {
-                    return Err(Nip70ServerError::InternalError);
-                },
-            )),
             METHOD_NAME_GET_PUBLIC_KEY => Ok(Nip70Request::GetPublicKey),
             METHOD_NAME_SIGN_EVENT => Ok(Nip70Request::SignEvent(
                 if let Ok(value) =
@@ -313,7 +261,6 @@ impl Nip70Request {
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum Nip70Response {
-    RegisterApplication,
     GetPublicKey(PublicKey),
     SignEvent(Event),
 }
@@ -341,16 +288,6 @@ impl Nip70Response {
             Err(Nip70ClientError::ProtocolError)
         }
     }
-}
-
-/// A request to register a client application.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct RegisterApplicationRequest {
-    /// The nPub of the client application.
-    pubkey: PublicKey,
-
-    /// The name of the client application that is suggested by the client.
-    display_name: String,
 }
 
 #[cfg(test)]
@@ -383,17 +320,6 @@ mod tests {
 
     #[async_trait]
     impl Nip70 for TestNip70Implementation {
-        async fn register_application(
-            &self,
-            _register_application_request: RegisterApplicationRequest,
-        ) -> Result<(), Nip70ServerError> {
-            if self.reject_all_requests {
-                return Err(Nip70ServerError::Rejected);
-            }
-
-            Ok(())
-        }
-
         async fn get_public_key(&self) -> Result<PublicKey, Nip70ServerError> {
             if self.reject_all_requests {
                 return Err(Nip70ServerError::Rejected);
@@ -431,22 +357,6 @@ mod tests {
         let server = run_nip70_server_internal(nip70, uds_address.clone()).unwrap();
         let client = Nip70Client::new_internal(uds_address);
         (server, client)
-    }
-
-    #[tokio::test]
-    async fn register_application_over_uds() {
-        let nip70 = Arc::from(TestNip70Implementation::new_with_generated_keys());
-        let (server, client) = get_nip70_server_and_client_test_pair(nip70.clone());
-
-        client
-            .register_application(RegisterApplicationRequest {
-                pubkey: Keys::generate().public_key(),
-                display_name: "Test app".to_string(),
-            })
-            .await
-            .unwrap();
-
-        server.stop();
     }
 
     #[tokio::test]
