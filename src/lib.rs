@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use nip_55::json_rpc::{
-    JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest, JsonRpcResponseData, JsonRpcServer,
+    JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest, JsonRpcResponseData,
     JsonRpcServerHandler, JsonRpcStructuredValue,
 };
 pub use nip_55::UdsClientError;
@@ -58,7 +58,7 @@ pub trait Nip70: Send + Sync {
 
 /// A server for the NIP-70 protocol.
 pub struct Nip70Server {
-    json_rpc_server: JsonRpcServer,
+    nip55_server: Nip55Server,
 }
 
 impl Nip70Server {
@@ -73,16 +73,17 @@ impl Nip70Server {
         server_keypair: Keys,
     ) -> std::io::Result<Self> {
         Ok(Self {
-            json_rpc_server: JsonRpcServer::new(
-                Box::from(Nip55Server::connect_and_start(uds_address, server_keypair)?),
+            nip55_server: Nip55Server::start(
+                uds_address,
+                server_keypair,
                 Box::from(Nip70ServerHandler { nip70 }),
-            ),
+            )?,
         })
     }
 
     /// Stops the NIP-70 server.
     pub fn stop(self) {
-        self.json_rpc_server.stop();
+        self.nip55_server.stop();
     }
 }
 
