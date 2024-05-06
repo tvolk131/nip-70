@@ -3,11 +3,11 @@ use json_rpc::{
     JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest, JsonRpcResponseData, JsonRpcServer,
     JsonRpcServerHandler, JsonRpcStructuredValue,
 };
-use nip04_over_uds::{client::UnixDomainSocketNip46Client, server::UnixDomainSocketNip04Server};
+use nip55::{client::UnixDomainSocketNip46Client, server::UnixDomainSocketNip04Server};
 use nostr_sdk::{Event, Keys, Kind, PublicKey, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-mod nip04_over_uds;
+mod nip55;
 use std::sync::Arc;
 pub use uds_req_res::client::UdsClientError;
 
