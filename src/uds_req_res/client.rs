@@ -52,6 +52,7 @@ impl UnixDomainSocketClientTransport {
     }
 }
 
+/// Errors that can occur when communicating with a Unix domain socket server.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UdsClientError {
     /// A Unix domain socket server is not running on the specified address.

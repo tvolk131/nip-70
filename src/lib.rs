@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod nip04_over_uds;
 use std::sync::Arc;
-use uds_req_res::client::UdsClientError;
+pub use uds_req_res::client::UdsClientError;
 
 mod json_rpc;
 mod uds_req_res;
@@ -53,33 +53,44 @@ impl Nip70ServerError {
 }
 
 /// Defines the server-side functionality for the NIP-70 protocol.
-/// Implement this trait and pass it to `run_nip70_server()` to run a NIP-70 server.
+/// Implement this trait and pass it to [`Nip70Server::start()`] to run a NIP-70 server.
 #[async_trait]
 pub trait Nip70: Send + Sync {
     /// Signs a Nostr event on behalf of the signed-in user.
     async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ServerError>;
 }
 
-/// Creates and starts a NIP-70 compliant Unix domain socket server.
-pub fn run_nip70_server(
-    nip70: Arc<dyn Nip70>,
-    server_keypair: Keys,
-) -> std::io::Result<JsonRpcServer> {
-    run_nip70_server_internal(nip70, NIP70_UDS_ADDRESS.to_string(), server_keypair)
+/// A server for the NIP-70 protocol.
+pub struct Nip70Server {
+    json_rpc_server: JsonRpcServer,
 }
 
-fn run_nip70_server_internal(
-    nip70: Arc<dyn Nip70>,
-    uds_address: String,
-    server_keypair: Keys,
-) -> std::io::Result<JsonRpcServer> {
-    Ok(JsonRpcServer::new(
-        Box::from(UnixDomainSocketNip04Server::connect_and_start(
-            uds_address,
-            server_keypair,
-        )?),
-        Box::from(Nip70ServerHandler { nip70 }),
-    ))
+impl Nip70Server {
+    /// Creates and starts a NIP-70 compliant Unix domain socket server.
+    pub fn start(nip70: Arc<dyn Nip70>, server_keypair: Keys) -> std::io::Result<Self> {
+        Self::start_internal(nip70, NIP70_UDS_ADDRESS.to_string(), server_keypair)
+    }
+
+    fn start_internal(
+        nip70: Arc<dyn Nip70>,
+        uds_address: String,
+        server_keypair: Keys,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            json_rpc_server: JsonRpcServer::new(
+                Box::from(UnixDomainSocketNip04Server::connect_and_start(
+                    uds_address,
+                    server_keypair,
+                )?),
+                Box::from(Nip70ServerHandler { nip70 }),
+            ),
+        })
+    }
+
+    /// Stops the NIP-70 server.
+    pub fn stop(self) {
+        self.json_rpc_server.stop();
+    }
 }
 
 struct Nip70ServerHandler {
@@ -342,11 +353,12 @@ mod tests {
 
     fn get_nip70_server_and_client_test_pair(
         nip70: Arc<dyn Nip70>,
-    ) -> (JsonRpcServer, Nip70Client, Keys) {
+    ) -> (Nip70Server, Nip70Client, Keys) {
         let uds_address = get_free_uds_address();
         let server_keypair = Keys::generate();
         let server =
-            run_nip70_server_internal(nip70, uds_address.clone(), server_keypair.clone()).unwrap();
+            Nip70Server::start_internal(nip70, uds_address.clone(), server_keypair.clone())
+                .unwrap();
         let client = Nip70Client::new_internal(uds_address);
         (server, client, server_keypair)
     }
@@ -416,7 +428,7 @@ mod tests {
     fn run_server_without_async_runtime() {
         let uds_address = get_free_uds_address();
         let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
-        run_nip70_server_internal(Arc::from(nip70), uds_address.clone(), keys).unwrap();
+        Nip70Server::start_internal(Arc::from(nip70), uds_address.clone(), keys).unwrap();
     }
 
     #[tokio::test]
