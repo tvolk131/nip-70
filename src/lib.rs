@@ -1,18 +1,14 @@
 use async_trait::async_trait;
-use json_rpc::{
+use nip_55::json_rpc::{
     JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest, JsonRpcResponseData, JsonRpcServer,
     JsonRpcServerHandler, JsonRpcStructuredValue,
 };
-use nip55::{client::UnixDomainSocketNip46Client, server::UnixDomainSocketNip04Server};
+pub use nip_55::UdsClientError;
+use nip_55::{Nip55Client, Nip55Server};
 use nostr_sdk::{Event, Keys, Kind, PublicKey, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-mod nip55;
 use std::sync::Arc;
-pub use uds_req_res::client::UdsClientError;
-
-mod json_rpc;
-mod uds_req_res;
 
 const NIP70_UDS_ADDRESS: &str = "/tmp/nip-70.sock";
 
@@ -78,10 +74,7 @@ impl Nip70Server {
     ) -> std::io::Result<Self> {
         Ok(Self {
             json_rpc_server: JsonRpcServer::new(
-                Box::from(UnixDomainSocketNip04Server::connect_and_start(
-                    uds_address,
-                    server_keypair,
-                )?),
+                Box::from(Nip55Server::connect_and_start(uds_address, server_keypair)?),
                 Box::from(Nip70ServerHandler { nip70 }),
             ),
         })
@@ -158,7 +151,7 @@ impl Nip70ClientError {
 /// A client for the NIP-70 protocol.
 #[derive(Clone)]
 pub struct Nip70Client {
-    transport: UnixDomainSocketNip46Client,
+    transport: Nip55Client,
 }
 
 impl Default for Nip70Client {
@@ -174,7 +167,7 @@ impl Nip70Client {
 
     fn new_internal(uds_address: String) -> Self {
         Self {
-            transport: UnixDomainSocketNip46Client::new(uds_address),
+            transport: Nip55Client::new(uds_address),
         }
     }
 
@@ -375,7 +368,7 @@ mod tests {
         let tags = vec![];
         let content = String::from("Hello, world!");
         let unsigned_event = UnsignedEvent {
-            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            id: Some(EventId::new(&pubkey, created_at, &kind, &tags, &content)),
             pubkey,
             created_at,
             kind,
@@ -405,7 +398,7 @@ mod tests {
         let tags = vec![];
         let content: String = std::iter::repeat('a').take((2 as usize).pow(20)).collect();
         let unsigned_event = UnsignedEvent {
-            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            id: Some(EventId::new(&pubkey, created_at, &kind, &tags, &content)),
             pubkey,
             created_at,
             kind,
@@ -450,7 +443,7 @@ mod tests {
                     let tags = vec![];
                     let content = format!("Message {} from thread {}.", j, i);
                     let unsigned_event = UnsignedEvent {
-                        id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+                        id: Some(EventId::new(&pubkey, created_at, &kind, &tags, &content)),
                         pubkey,
                         created_at,
                         kind,
@@ -464,7 +457,7 @@ mod tests {
                         .unwrap();
 
                     assert!(event.verify().is_ok());
-                    assert_eq!(event.id, unsigned_event.id);
+                    assert_eq!(Some(event.id), unsigned_event.id);
 
                     // Give other client tasks a chance to send requests.
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -491,7 +484,7 @@ mod tests {
         let tags = vec![];
         let content = String::from("Hello, world!");
         let unsigned_event = UnsignedEvent {
-            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            id: Some(EventId::new(&pubkey, created_at, &kind, &tags, &content)),
             pubkey,
             created_at,
             kind,
@@ -519,7 +512,7 @@ mod tests {
         let tags = vec![];
         let content = String::from("Hello, world!");
         let unsigned_event = UnsignedEvent {
-            id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
+            id: Some(EventId::new(&pubkey, created_at, &kind, &tags, &content)),
             pubkey,
             created_at,
             kind,
