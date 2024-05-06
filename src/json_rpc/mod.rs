@@ -233,10 +233,6 @@ impl JsonRpcResponse {
     pub fn data(&self) -> &JsonRpcResponseData {
         &self.data
     }
-
-    pub fn take_data(self) -> JsonRpcResponseData {
-        self.data
-    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
