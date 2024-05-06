@@ -4,6 +4,8 @@ use std::pin::Pin;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::json_rpc::{JsonRpcRequest, JsonRpcResponse, JsonRpcServerTransport};
+
 use super::{UdsRequest, UdsResponse};
 
 pub struct UnixDomainSocketServerTransport<Request: UdsRequest, Response: UdsResponse> {
@@ -12,6 +14,8 @@ pub struct UnixDomainSocketServerTransport<Request: UdsRequest, Response: UdsRes
         futures::channel::mpsc::Receiver<(Request, futures::channel::oneshot::Sender<Response>)>,
     uds_address: String,
 }
+
+impl JsonRpcServerTransport for UnixDomainSocketServerTransport<JsonRpcRequest, JsonRpcResponse> {}
 
 impl<Request: UdsRequest, Response: UdsResponse> std::ops::Drop
     for UnixDomainSocketServerTransport<Request, Response>

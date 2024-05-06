@@ -1,5 +1,3 @@
-pub mod uds;
-
 use crate::uds_req_res::{UdsRequest, UdsResponse};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -234,6 +232,10 @@ impl JsonRpcResponse {
 
     pub fn data(&self) -> &JsonRpcResponseData {
         &self.data
+    }
+
+    pub fn take_data(self) -> JsonRpcResponseData {
+        self.data
     }
 }
 

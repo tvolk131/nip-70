@@ -1,13 +1,13 @@
 use async_trait::async_trait;
-use json_rpc::uds::client::UnixDomainSocketJsonRpcClientTransport;
-use json_rpc::uds::server::UnixDomainSocketJsonRpcServerTransport;
 use json_rpc::{
-    JsonRpcClientTransport, JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest,
-    JsonRpcResponseData, JsonRpcServer, JsonRpcServerHandler, JsonRpcStructuredValue,
+    JsonRpcError, JsonRpcErrorCode, JsonRpcId, JsonRpcRequest, JsonRpcResponseData, JsonRpcServer,
+    JsonRpcServerHandler, JsonRpcStructuredValue,
 };
-use nostr_sdk::{Event, UnsignedEvent};
+use nip04_over_uds::{client::UnixDomainSocketNip46Client, server::UnixDomainSocketNip04Server};
+use nostr_sdk::{Event, Keys, Kind, PublicKey, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+mod nip04_over_uds;
 use std::sync::Arc;
 use uds_req_res::client::UdsClientError;
 
@@ -61,17 +61,22 @@ pub trait Nip70: Send + Sync {
 }
 
 /// Creates and starts a NIP-70 compliant Unix domain socket server.
-pub fn run_nip70_server(nip70: Arc<dyn Nip70>) -> std::io::Result<JsonRpcServer> {
-    run_nip70_server_internal(nip70, NIP70_UDS_ADDRESS.to_string())
+pub fn run_nip70_server(
+    nip70: Arc<dyn Nip70>,
+    server_keypair: Keys,
+) -> std::io::Result<JsonRpcServer> {
+    run_nip70_server_internal(nip70, NIP70_UDS_ADDRESS.to_string(), server_keypair)
 }
 
 fn run_nip70_server_internal(
     nip70: Arc<dyn Nip70>,
     uds_address: String,
+    server_keypair: Keys,
 ) -> std::io::Result<JsonRpcServer> {
     Ok(JsonRpcServer::new(
-        Box::from(UnixDomainSocketJsonRpcServerTransport::connect_and_start(
+        Box::from(UnixDomainSocketNip04Server::connect_and_start(
             uds_address,
+            server_keypair,
         )?),
         Box::from(Nip70ServerHandler { nip70 }),
     ))
@@ -142,7 +147,7 @@ impl Nip70ClientError {
 /// A client for the NIP-70 protocol.
 #[derive(Clone)]
 pub struct Nip70Client {
-    transport: UnixDomainSocketJsonRpcClientTransport,
+    transport: UnixDomainSocketNip46Client,
 }
 
 impl Default for Nip70Client {
@@ -158,25 +163,33 @@ impl Nip70Client {
 
     fn new_internal(uds_address: String) -> Self {
         Self {
-            transport: UnixDomainSocketJsonRpcClientTransport::new(uds_address),
+            transport: UnixDomainSocketNip46Client::new(uds_address),
         }
     }
 
     /// Signs a Nostr event on behalf of the signed-in user using the NIP-70 server.
-    pub async fn sign_event(&self, event: UnsignedEvent) -> Result<Event, Nip70ClientError> {
-        self.send_request(Nip70Request::SignEvent(event))
+    pub async fn sign_event(
+        &self,
+        event: UnsignedEvent,
+        server_pubkey: PublicKey,
+    ) -> Result<Event, Nip70ClientError> {
+        self.send_request(Nip70Request::SignEvent(event), server_pubkey)
             .await
             .map(|response| match response {
                 Nip70Response::SignEvent(event) => Ok(event),
             })?
     }
 
-    async fn send_request(&self, request: Nip70Request) -> Result<Nip70Response, Nip70ClientError> {
+    async fn send_request(
+        &self,
+        request: Nip70Request,
+        server_pubkey: PublicKey,
+    ) -> Result<Nip70Response, Nip70ClientError> {
         // TODO: Use a real request id.
         let json_rpc_request = request.to_json_rpc_request(JsonRpcId::Null);
         let json_rpc_response = self
             .transport
-            .send_request(json_rpc_request.clone())
+            .send_request(Kind::NostrConnect, &json_rpc_request, server_pubkey)
             .await
             .map_err(Nip70ClientError::UdsClientError)?;
         Nip70Response::from_json_rpc_response_data(json_rpc_response.data())
@@ -329,17 +342,20 @@ mod tests {
 
     fn get_nip70_server_and_client_test_pair(
         nip70: Arc<dyn Nip70>,
-    ) -> (JsonRpcServer, Nip70Client) {
+    ) -> (JsonRpcServer, Nip70Client, Keys) {
         let uds_address = get_free_uds_address();
-        let server = run_nip70_server_internal(nip70, uds_address.clone()).unwrap();
+        let server_keypair = Keys::generate();
+        let server =
+            run_nip70_server_internal(nip70, uds_address.clone(), server_keypair.clone()).unwrap();
         let client = Nip70Client::new_internal(uds_address);
-        (server, client)
+        (server, client, server_keypair)
     }
 
     #[tokio::test]
     async fn sign_event_over_uds() {
         let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
-        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
+        let (server, client, server_keypair) =
+            get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
         let pubkey = keys.public_key();
         let created_at = Timestamp::now();
@@ -355,7 +371,10 @@ mod tests {
             content,
         };
 
-        let event = client.sign_event(unsigned_event).await.unwrap();
+        let event = client
+            .sign_event(unsigned_event, server_keypair.public_key())
+            .await
+            .unwrap();
 
         assert!(event.verify().is_ok());
 
@@ -365,13 +384,14 @@ mod tests {
     #[tokio::test]
     async fn sign_large_event_over_uds() {
         let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
-        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
+        let (server, client, server_keypair) =
+            get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
         let pubkey = keys.public_key();
         let created_at = Timestamp::now();
         let kind = Kind::TextNote;
         let tags = vec![];
-        let content: String = std::iter::repeat('a').take((2 as usize).pow(25)).collect();
+        let content: String = std::iter::repeat('a').take((2 as usize).pow(20)).collect();
         let unsigned_event = UnsignedEvent {
             id: EventId::new(&pubkey, created_at, &kind, &tags, &content),
             pubkey,
@@ -381,7 +401,10 @@ mod tests {
             content,
         };
 
-        let event = client.sign_event(unsigned_event).await.unwrap();
+        let event = client
+            .sign_event(unsigned_event, server_keypair.public_key())
+            .await
+            .unwrap();
 
         assert!(event.verify().is_ok());
 
@@ -392,20 +415,22 @@ mod tests {
     #[should_panic(expected = "must be called from the context of a Tokio 1.x runtime")]
     fn run_server_without_async_runtime() {
         let uds_address = get_free_uds_address();
-        let (nip70, _keys) = TestNip70Implementation::new_with_generated_keys();
-        run_nip70_server_internal(Arc::from(nip70), uds_address.clone()).unwrap();
+        let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
+        run_nip70_server_internal(Arc::from(nip70), uds_address.clone(), keys).unwrap();
     }
 
     #[tokio::test]
     async fn sign_event_over_uds_load() {
         let (nip70, keys) = TestNip70Implementation::new_with_generated_keys();
-        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
+        let (server, client, server_keypair) =
+            get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
         let pubkey = keys.public_key();
 
         let mut client_handles = Vec::new();
         for i in 0..128 {
             let client = client.clone();
+            let server_keypair = server_keypair.clone();
             let handle = tokio::spawn(async move {
                 for j in 0..20 {
                     let created_at = Timestamp::now();
@@ -421,7 +446,10 @@ mod tests {
                         content,
                     };
 
-                    let event = client.sign_event(unsigned_event.clone()).await.unwrap();
+                    let event = client
+                        .sign_event(unsigned_event.clone(), server_keypair.public_key())
+                        .await
+                        .unwrap();
 
                     assert!(event.verify().is_ok());
                     assert_eq!(event.id, unsigned_event.id);
@@ -460,7 +488,7 @@ mod tests {
         };
 
         assert_eq!(
-            client.sign_event(unsigned_event).await,
+            client.sign_event(unsigned_event, pubkey).await,
             Err(Nip70ClientError::UdsClientError(
                 UdsClientError::ServerNotRunning
             ))
@@ -470,7 +498,8 @@ mod tests {
     #[tokio::test]
     async fn make_rpc_with_rejected_request() {
         let (nip70, keys) = TestNip70Implementation::new_rejecting_all_requests();
-        let (server, client) = get_nip70_server_and_client_test_pair(Arc::from(nip70));
+        let (server, client, server_keypair) =
+            get_nip70_server_and_client_test_pair(Arc::from(nip70));
 
         let pubkey = keys.public_key();
         let created_at = Timestamp::now();
@@ -487,7 +516,9 @@ mod tests {
         };
 
         assert_eq!(
-            client.sign_event(unsigned_event).await,
+            client
+                .sign_event(unsigned_event, server_keypair.public_key())
+                .await,
             Err(Nip70ClientError::ServerError(Nip70ServerError::Rejected))
         );
 

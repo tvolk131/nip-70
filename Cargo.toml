@@ -8,6 +8,7 @@ documentation = "https://docs.rs/nip-70"
 repository = "https://github.com/tvolk131/nip-70"
 
 [dependencies]
+anyhow = "1"
 async-trait = "0.1"
 futures = "0.3"
 nostr-sdk = "0.29"
